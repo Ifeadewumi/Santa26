@@ -112,3 +112,9 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - v7: **seed sieve** (`seedCands`). For a in [2^12, 2^24], count targets with |t − round(t/a)·a| ≤ 1024, score with a Poisson tail, drop small-ratio duplicates, cache per puzzle (about 1.7 s). On scored_0923 it recovers 903228 and 329948 (p≈1e-8) and their small multiples. Portfolio param `nSeeds` (0 in 40% of runs, otherwise 1–8) builds them first. A/B with a single cheapest-first run: scored_0923 219→188, practice_0016 211→190, others neutral or worse, so it belongs in the portfolio, not as a default.
 - Kaggle shards `elf-v5-00..04` are running. Fixed a broken `status` command in `kaggle_shards.py` (left over from a bad edit), and `collect` now honours `--shards`.
 - Cofactor partners (round(t/s) recurring for ≥2 targets) added to the seed list. Single-run A/B for seeds 0/4/8/12: scored_0923 219/196/197/233, practice_0016 211/196/209/201, practice_0015 186/179/200/190, practice_0019 175/198/194/200. More seeds don't help, so `nSeeds` stays a random portfolio option (1–8). The remaining cost is building the seeds themselves (5–6 instructions each, where good programs share a small dictionary).
+
+## 13. Scored run 1: submitted
+- Run 1 (v3, 3,593 s, 4 threads, warm start from sample) finished with 1000/1000 valid programs and **166,079** (Python re-verification: 0 invalid).
+- Submitted `submission_run1.csv` (own lineage only). **Kaggle public score 166,079**, equal to the local score. Leaderboard top at that time: 125,289. Public frontier: 128,324.
+- `ours.txt` = per-puzzle best of our own lineage (sample ∪ run 1) = 166,079.
+- Local cores are now free. Started **local run 2**: v7 (seeds, pool cap, `--fresh-polish 3`) on shards 5–9 (500 puzzles not covered by the running Kaggle wave), 2 h, warm start `ours.txt`.
