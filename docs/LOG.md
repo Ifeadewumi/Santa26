@@ -44,3 +44,6 @@ Takeaways: "independent" and "mixed" (random large targets) dominate the remaini
 - Implemented behind `Params.deep`/`deepK` (root plus the top `deepK` beam states per depth). Ablate with `--ablate deep`. Off for the cheap-ordering estimates.
 - The table's sorted copy moved from `std::sort` of pairs to a 4-pass 16-bit LSD radix sort (also used by the additive moves).
 - Built as `solver_v3`. Evaluation is pending until the ablation suite (run on the v2 binary) finishes.
+
+## 6. Ablation results (v2 binary, practice set, 300 s per config)
+Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is essential. At 6 s per puzzle, speed dominates and the expensive components (L2 table, additive moves) are net negative. The per-try bandit was the wrong metric and hurt slightly. Next: per-second bandit credit with L2 as an arm, and re-test at a representative budget (about 30 s per puzzle) with a repeat seed to measure noise.
