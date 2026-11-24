@@ -675,7 +675,14 @@ static Params randomParams(mt19937_64 &rng) {
     return p;
 }
 
-struct Result { vector<Instr> prog; bool have = false; int runs = 0; bool optimal = false; };
+struct Result { vector<Instr> prog; bool have = false; int runs = 0; bool optimal = false; string tag = "init"; };
+
+static string tagOf(const Params &p) {
+    char b[160];
+    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d sk%llu%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
+             (int)p.rootWide, (int)p.additive, p.addK, (unsigned long long)p.smallKeep, p.fallbackOnly ? " FB" : "");
+    return b;
+}
 
 static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u64 seed, Tables &T, Planner &PL) {
     double t0 = nowSec(), deadline = t0 + budget;
@@ -687,9 +694,9 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
         for (u64 v : P.start) { int t = tIndex(P.tg, v); if (t >= 0) c[t] = 1; }
         for (char x : c) lb += !x;
     }
-    auto consider = [&](vector<Instr> &prog) {
+    auto consider = [&](vector<Instr> &prog, const string &tag) {
         if (!simulate(P, prog)) return;
-        if (!best.have || prog.size() < best.prog.size()) { best.prog = prog; best.have = true; }
+        if (!best.have || prog.size() < best.prog.size()) { best.prog = prog; best.have = true; best.tag = tag; }
     };
     if (best.have && (int)best.prog.size() <= lb) { best.optimal = true; return best; }
 
@@ -705,21 +712,21 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
         vector<Instr> prog;
         Params p = k < fixed.size() ? fixed[k] : Params();
         if (k >= fixed.size()) p.fallbackOnly = true;
-        if (runStrategy(P, p, T, PL, rng, prog, deadline, !best.have)) consider(prog);
+        if (runStrategy(P, p, T, PL, rng, prog, deadline, !best.have)) consider(prog, "F" + to_string(k) + " " + tagOf(p));
         best.runs++;
         if (k > fixed.size() + 2) break;
         if (k == 0 && P.limit <= (1u << 20) && best.have && (int)best.prog.size() > lb) {
             Exact ex(P, t0 + max(1.0, budget * 0.6));
             vector<Instr> eo;
             int r = ex.solve((int)best.prog.size() - 1, eo);
-            if (r == 1) { consider(eo); best.optimal = true; return best; }
+            if (r == 1) { consider(eo, "exact"); best.optimal = true; return best; }
             if (r == 0) { best.optimal = true; return best; }  // nothing shorter exists
         }
     }
     while (best.have && (int)best.prog.size() > lb && nowSec() < deadline) {
         Params p = randomParams(rng);
         vector<Instr> prog;
-        if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) consider(prog);
+        if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) consider(prog, "R " + tagOf(p));
         best.runs++;
     }
     if (best.have && (int)best.prog.size() <= lb) best.optimal = true;
@@ -832,8 +839,8 @@ int main(int argc, char **argv) {
             res[i] = r;
             if (before >= 0) improvedSum += before - (int)r.prog.size();
             int d = ++done;
-            fprintf(stderr, "[%d/%d] %s targets=%zu len=%d prev=%d runs=%d %s %.1fs/%.1fs\n", d, N, ps[i].id.c_str(),
-                    ps[i].tg.size(), r.have ? (int)r.prog.size() : -1, before, r.runs, r.optimal ? "OPT" : "", nowSec() - t0, budget);
+            fprintf(stderr, "[%d/%d] %s targets=%zu len=%d prev=%d runs=%d %s %.1fs/%.1fs | %s\n", d, N, ps[i].id.c_str(),
+                    ps[i].tg.size(), r.have ? (int)r.prog.size() : -1, before, r.runs, r.optimal ? "OPT" : "", nowSec() - t0, budget, r.tag.c_str());
         }
     };
     vector<thread> th;
