@@ -119,3 +119,11 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - `ours.txt` = per-puzzle best of our own lineage (sample ∪ run 1) = 166,079.
 - Local cores are now free. Started **local run 2**: v7 (seeds, pool cap, `--fresh-polish 3`) on shards 5–9 (500 puzzles not covered by the running Kaggle wave), 2 h, warm start `ours.txt`.
 - Seed normalisation (v8). Naive "a/k explains ≥ as many targets" over-reduces to chance divisors: scored_0923 got 205–236. Restricting it to divisors that are themselves significant candidates gave mixed results: practice_0015 186→**168**, 0016→195, 0004→113, but scored_0923 213 (raw list: 188). Both variants are kept as the portfolio switch `seedNorm`, cached separately.
+- Smallest-first L2 expansion (with pool cap 88 the 1.5M L2 cap truncates the expansion): neutral on 6 puzzles (net +3), reverted.
+- **v9: backward-beam rebuild inside the polisher.** When the exact ≤3-instruction rebuild fails and the cone has ≥4 instructions, 30% of the time the solver's own backward beam planner (tables built from all available program values, beam 16) rebuilds the value, accepted if it is no longer. Polish A/B, 30 s on our run-1 programs:
+
+  | puzzle | v8 | v9 |
+  |---|---|---|
+  | scored_0606 | 185 | **182** |
+  | scored_0542 | 121 | **119** |
+  | scored_0923 | 230 | **227** |

@@ -922,7 +922,37 @@ struct Polisher {
     vector<u64> av; vector<int> an;               // available values / node ids
     unordered_map<u64, int> amap;                 // value -> index in av
     OpenMap p1; vector<u64> p1keys;               // one-step values: packed (i<<14 | j<<2 | op)
+    Tables *T = nullptr; Planner *PL = nullptr;   // optional: backward-beam rebuild of long private chains
+    int beamPct = 30, beamW = 16;
     Polisher(const Puzzle &p, mt19937_64 &r) : P(p), rng(r) {}
+
+    // rebuild t with the backward beam planner over all available values; <= budget steps
+    int beamRebuild(u64 t, int budget, vector<RStep> &st) {
+        st.clear();
+        T->build(av, P.limit, false, 0);
+        Params bp; bp.beam = beamW; bp.termK = 6; bp.rootWide = true; bp.additive = true; bp.deep = false; bp.L2 = false;
+        vector<Step> steps; int est;
+        if (!PL->plan(t, bp, bp.beam, bp.termK, steps, est)) return -1;
+        if (steps.empty() || (int)steps.size() > budget) return -1;
+        unordered_map<u64, int> prodIdx;
+        for (size_t k = 0; k < steps.size(); k++) {
+            auto ref = [&](u64 v) -> int {
+                auto it = amap.find(v);
+                if (it != amap.end()) return an[it->second];
+                auto jt = prodIdx.find(v);
+                if (jt != prodIdx.end()) return -(jt->second + 1);
+                return INT_MIN;
+            };
+            int ra = ref(steps[k].a), rb = ref(steps[k].b);
+            if (ra == INT_MIN || rb == INT_MIN) return -1;
+            u64 r;
+            if (!doOp(steps[k].op, steps[k].a, steps[k].b, P.limit, r)) return -1;
+            st.push_back({steps[k].op, ra, rb, r});
+            if (!prodIdx.count(r)) prodIdx[r] = k;
+        }
+        if (st.back().v != t) return -1;
+        return st.size();
+    }
 
     // inverse candidates: list of (needed y, op, xFirst) s.t. t = x op y (xFirst) or t = y op x
     template <class F> void inv(u64 t, u64 x, F f) {
@@ -1056,6 +1086,7 @@ struct Polisher {
         for (int v : roots) {
             vector<RStep> st;
             int c = rebuild(nd[v].v, min(budgetLeft, 3), st);
+            if (c < 0 && T && budgetLeft >= 4 && (int)(rng() % 100) < beamPct) c = beamRebuild(nd[v].v, budgetLeft, st);
             if (c < 0) return -1;
             budgetLeft -= c;
             if (c == 0) { finalId[v] = an[amap[nd[v].v]]; continue; }
@@ -1124,13 +1155,15 @@ struct Polisher {
 };
 
 // Polish one program for `budget` seconds; returns the best program found (never longer than the input).
-static vector<Instr> polishProgram(const Puzzle &P, const vector<Instr> &prog0, double budget, mt19937_64 &rng, int &moves, int &improved) {
+static vector<Instr> polishProgram(const Puzzle &P, const vector<Instr> &prog0, double budget, mt19937_64 &rng, int &moves, int &improved,
+                                   Tables *T = nullptr, Planner *PL = nullptr) {
     vector<Instr> best = prog0, cur = prog0;
     vector<Node> nd, nn;
     moves = improved = 0;
     if (!progToNodes(P, cur, nd)) return best;
     { vector<Instr> tmp; if (finalizeSSA(P, nd, P.start.size(), tmp) && simulate(P, tmp) && tmp.size() <= cur.size()) { cur = tmp; progToNodes(P, cur, nd); if (cur.size() < best.size()) best = cur; } }
     Polisher PO(P, rng);
+    PO.T = T; PO.PL = PL;
     double end = nowSec() + budget;
     int ns = P.start.size();
     while (nowSec() < end) {
@@ -1297,7 +1330,7 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
         if (runStrategy(P, p, T, PL, rng, prog, deadline, !best.have)) {
             if (FRESH_POLISH > 0 && !p.fallbackOnly && (!best.have || prog.size() <= best.prog.size() * 1.15)) {
                 int mv, im;
-                prog = polishProgram(P, prog, min(FRESH_POLISH, max(0.0, deadline - nowSec())), rng, mv, im);
+                prog = polishProgram(P, prog, min(FRESH_POLISH, max(0.0, deadline - nowSec())), rng, mv, im, &T, &PL);
             }
             consider(prog, "F" + to_string(k) + " " + tagOf(p) + (FRESH_POLISH > 0 ? " +pol" : ""));
         }
@@ -1319,7 +1352,7 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
         if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) {
             if (FRESH_POLISH > 0 && prog.size() <= best.prog.size() * 1.15) {
                 int mv, im;
-                prog = polishProgram(P, prog, min(FRESH_POLISH, max(0.0, deadline - nowSec())), rng, mv, im);
+                prog = polishProgram(P, prog, min(FRESH_POLISH, max(0.0, deadline - nowSec())), rng, mv, im, &T, &PL);
             }
             consider(prog, "R " + tagOf(p) + (FRESH_POLISH > 0 ? " +pol" : ""));
         }
@@ -1459,7 +1492,7 @@ int main(int argc, char **argv) {
                 if (init.have) {
                     mt19937_64 prng(seed ^ mix64(std::hash<string>()(ps[i].id)));
                     int mv, im;
-                    vector<Instr> np = polishProgram(ps[i], init.prog, budget, prng, mv, im);
+                    vector<Instr> np = polishProgram(ps[i], init.prog, budget, prng, mv, im, &T, &PL);
                     if (simulate(ps[i], np) && np.size() <= init.prog.size()) r.prog = np;
                     r.runs = mv; r.tag = "polish improved=" + to_string(im);
                 }
