@@ -655,12 +655,54 @@ struct Exact {
     }
 };
 
+// ------------------------------------------------------------------ ablation switches + strategy bandit
+struct Overrides {
+    bool noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
+    int modeMask = 7;  // bit m set => ordering mode m allowed
+} OV;
+
+static bool applyOv(Params &p) {  // returns false if the params' mode is disabled
+    if (OV.noL2) p.L2 = false;
+    if (OV.noAdd) p.additive = false;
+    if (OV.noRootWide) p.rootWide = false;
+    if (OV.noGcd) p.gcd = false;
+    return (OV.modeMask >> p.mode) & 1;
+}
+
+// Arms = (ordering mode, gcd seeding). Credit = instructions saved by a randomized run, per try.
+static const int NARM = 6;
+static mutex banditMu;
+static double armGain[NARM], armTries[NARM];
+static int armOf(const Params &p) { return p.mode * 2 + (p.gcd ? 1 : 0); }
+static bool armAllowed(int a) { return ((OV.modeMask >> (a / 2)) & 1) && !(OV.noGcd && (a & 1)); }
+static int pickArm(mt19937_64 &rng) {
+    double w[NARM], tot = 0;
+    {
+        lock_guard<mutex> lg(banditMu);
+        for (int a = 0; a < NARM; a++) w[a] = armAllowed(a) ? (armGain[a] + 0.5) / (armTries[a] + 5.0) : 0.0;
+    }
+    int nAllowed = 0;
+    for (int a = 0; a < NARM; a++) nAllowed += armAllowed(a);
+    for (int a = 0; a < NARM; a++) tot += w[a];
+    uniform_real_distribution<double> U(0, 1);
+    if (OV.noBandit || U(rng) < 0.15 || tot <= 0) {  // exploration / uniform
+        int k = rng() % nAllowed;
+        for (int a = 0; a < NARM; a++) if (armAllowed(a) && k-- == 0) return a;
+    }
+    double x = U(rng) * tot;
+    for (int a = 0; a < NARM; a++) { x -= w[a]; if (x <= 0 && w[a] > 0) return a; }
+    for (int a = NARM - 1; a >= 0; a--) if (armAllowed(a)) return a;
+    return 2;
+}
+static void creditArm(int a, double gain) { lock_guard<mutex> lg(banditMu); armGain[a] += gain; armTries[a] += 1; }
+
 // ------------------------------------------------------------------ portfolio per puzzle
 static Params randomParams(mt19937_64 &rng) {
     uniform_real_distribution<double> U(0, 1);
     Params p;
-    p.mode = rng() % 3;
-    p.gcd = U(rng) < 0.35;
+    int arm = pickArm(rng);
+    p.mode = arm / 2;
+    p.gcd = arm & 1;
     p.gcdDrop = U(rng) < 0.5 ? 0.0 : 0.3 * U(rng);
     static const int beams[] = {8, 16, 24, 32, 48, 64, 96};
     p.beam = beams[rng() % 7];
@@ -672,6 +714,7 @@ static Params randomParams(mt19937_64 &rng) {
     p.addK = 1 + rng() % 5;
     static const u64 sk[] = {8, 64, 1024, 100000};
     p.smallKeep = sk[rng() % 4];
+    applyOv(p);
     return p;
 }
 
@@ -712,10 +755,11 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
         vector<Instr> prog;
         Params p = k < fixed.size() ? fixed[k] : Params();
         if (k >= fixed.size()) p.fallbackOnly = true;
+        else if (!applyOv(p)) continue;
         if (runStrategy(P, p, T, PL, rng, prog, deadline, !best.have)) consider(prog, "F" + to_string(k) + " " + tagOf(p));
         best.runs++;
         if (k > fixed.size() + 2) break;
-        if (k == 0 && P.limit <= (1u << 20) && best.have && (int)best.prog.size() > lb) {
+        if (k == 0 && !OV.noExact && P.limit <= (1u << 20) && best.have && (int)best.prog.size() > lb) {
             Exact ex(P, t0 + max(1.0, budget * 0.6));
             vector<Instr> eo;
             int r = ex.solve((int)best.prog.size() - 1, eo);
@@ -726,7 +770,9 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
     while (best.have && (int)best.prog.size() > lb && nowSec() < deadline) {
         Params p = randomParams(rng);
         vector<Instr> prog;
+        size_t before = best.prog.size();
         if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) consider(prog, "R " + tagOf(p));
+        creditArm(armOf(p), (double)before - (double)best.prog.size());
         best.runs++;
     }
     if (best.have && (int)best.prog.size() <= lb) best.optimal = true;
@@ -775,7 +821,7 @@ static void writeProgs(const string &fn, const vector<Puzzle> &ps, const vector<
 }
 
 int main(int argc, char **argv) {
-    string pf, of, inf, only;
+    string pf, of, inf, only, statsFile;
     double total = 600, maxPer = 1e18;
     int threads = max(1u, thread::hardware_concurrency());
     u64 seed = 2026;
@@ -790,8 +836,20 @@ int main(int argc, char **argv) {
         else if (a == "--threads") threads = stoi(nx());
         else if (a == "--seed") seed = stoull(nx());
         else if (a == "--only") only = nx();
+        else if (a == "--modes") { OV.modeMask = 0; for (char c : nx()) OV.modeMask |= 1 << (c - '0'); }
+        else if (a == "--ablate") {  // comma list of: L2,add,rw,gcd,exact,bandit
+            string v = nx() + ",";
+            OV.noL2 = v.find("L2,") != string::npos; OV.noAdd = v.find("add,") != string::npos;
+            OV.noRootWide = v.find("rw,") != string::npos; OV.noGcd = v.find("gcd,") != string::npos;
+            OV.noExact = v.find("exact,") != string::npos; OV.noBandit = v.find("bandit,") != string::npos;
+        }
+        else if (a == "--stats") statsFile = nx();
     }
     if (pf.empty() || of.empty()) { fprintf(stderr, "usage: solver --puzzles f --out f [--init f] [--total sec] [--threads n]\n"); return 2; }
+    if (!statsFile.empty()) {  // carry bandit statistics across runs
+        ifstream sf(statsFile);
+        for (int a = 0; a < NARM && sf; a++) sf >> armGain[a] >> armTries[a];
+    }
     vector<Puzzle> ps = readPuzzles(pf);
     if (!only.empty()) { vector<Puzzle> q; for (auto &p : ps) if (p.id == only) q.push_back(p); ps = q; }
     int N = ps.size();
@@ -859,6 +917,10 @@ int main(int argc, char **argv) {
     writeProgs(of, ps, res);
     long long sc = 0; int have = 0;
     for (auto &r : res) if (r.have) { sc += r.prog.size(); have++; }
+    fprintf(stderr, "BANDIT arm(mode,gcd) gain/tries:");
+    for (int a = 0; a < NARM; a++) fprintf(stderr, " m%d%s=%.0f/%.0f", a / 2, (a & 1) ? "g" : "", armGain[a], armTries[a]);
+    fprintf(stderr, "\n");
+    if (!statsFile.empty()) { ofstream sf(statsFile); for (int a = 0; a < NARM; a++) sf << armGain[a] << ' ' << armTries[a] << '\n'; }
     fprintf(stderr, "DONE solved=%d/%d score=%lld improved_vs_init=%lld time=%.0fs\n", have, N, sc, improvedSum, nowSec() - gStart);
     return 0;
 }

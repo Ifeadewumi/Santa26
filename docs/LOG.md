@@ -30,3 +30,11 @@ Command: `solver --puzzles practice.txt --out prac_v1.txt --total 300 --threads 
 
 Winning strategy per puzzle: cheapest-first ordering (`m1`) won 184 of 200, of which 47 were with gcd seeding (`m1g`). Ascending order won 9 and random order 7.
 Takeaways: "independent" and "mixed" (random large targets) dominate the remaining cost. Cheapest-first should get most of the time budget.
+
+## 4. Playbook integration (user approved all four items)
+- Read the Drive docs *Kaggle Competitions Template* and *Competitive AI ML Challenge Primer*. Mapped them to this competition in `docs/STRATEGY.md`.
+- Solver v2 (still one file):
+  - `--ablate L2,add,rw,gcd,exact,bandit` and `--modes 012` turn components off for ablations.
+  - A strategy bandit over (ordering mode × gcd seeding). The credit is instructions saved by a randomized run, per try. Arms are chosen in proportion to `(gain+0.5)/(tries+5)` with 15% uniform exploration. Statistics can persist via `--stats FILE`.
+- `solver/ablate.sh` runs 8 configs on the practice set with the same budget and seed (300 s each): base, no_bandit, no_L2, no_additive, no_rootwide, no_gcd, no_exact, only_cheapest.
+- Created `docs/EXPERIMENTS.md` (the experiment table).
