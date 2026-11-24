@@ -89,3 +89,12 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
   Defaults: fixed runs use 88, plus one fixed run at 48 that always fits. Random runs draw from {64,72,88,88,104,120}. `--poolcap` forces a value.
 - `--fresh-polish SEC`: every constructed program within 15% of the current best gets SEC seconds of value-graph polish before comparison (construct + polish, the "new lineage" method).
 - A/B started on 8 practice puzzles (2 per non-tiny family, 20 s each, 1 thread): v3 against v4 with `--fresh-polish 2`.
+
+## 11. Scale-out on Kaggle compute (user: "why assume you can't close the gap?")
+- Re-framed: the limits are compute and algorithm quality, and both can be moved. Compute: private Kaggle script kernels have 4 CPUs, g++ 13 and the competition data attached (verified with the test kernel `elf-shard-test`).
+- `solver/kaggle_shards.py` has three commands:
+  - `push` creates one private kernel per shard, embedding solver.cpp, elf.py and the shard's warm-start programs (gzip+base64).
+  - `status` shows each kernel's state.
+  - `collect` downloads outputs, verifies every program with `elf.check_program` and does a per-puzzle best merge.
+- Own-lineage warm start `ours.txt` = sample ∪ run-1 checkpoint (878,214 at push time, because run 1 is only partly done).
+- Pushed `elf-v5-00..04` (v5 solver, `--fresh-polish 3`, 3 h each, shards i::10). **Kaggle limits batch CPU sessions to 5 at a time**, so shards 5–9 are queued for the next wave (`--shards 5-9`).
