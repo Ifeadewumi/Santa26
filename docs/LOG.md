@@ -127,3 +127,11 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
   | scored_0606 | 185 | **182** |
   | scored_0542 | 121 | **119** |
   | scored_0923 | 230 | **227** |
+
+## 14. Target: top 50. Borrowing from the public frontier (user approved "learn/borrow")
+- Leaderboard (2,894 teams): rank 1 = 125,289, rank 10 = 126,498, rank 25 = 127,729, **rank 50 = 127,999**, rank 100 = 128,275, rank 200 = 128,316. Our own lineage at 166,079 sat at about rank 2,110.
+- **Exact recombination** (`solver/recombine.py`, CP-SAT). Pool every value of every program (11 public outputs plus our runs), enumerate all `a op b = c` recipes in the pool, and choose the minimum acyclic value set covering the targets, then schedule, allocate registers and verify. 10 puzzles at 20 s: **0 gains**. The frontier is optimal within the pooled values, matching the public write-up.
+- Our v9 polisher on 8 frontier programs (60 s each, about 5M moves): **0 gains**. The frontier is a local optimum for single and double cone-rebuild moves.
+- Downloaded 13 public program datasets (40 distinct verified program files) with `kaggle datasets download`. Merged frontier **128,311**: 13 programs from ozertuu, goodpjw2008 `our_programs`, ishankarnick, kevinsmith94624, alexchilton, kindasomethin and royalacecat beat the earlier notebook merge.
+- **Submitted** `submission_best.csv` = public frontier ∪ own lineage (ours is not shorter anywhere yet). **Public score 128,311** (about rank 190).
+- Sources are credited in `docs/CREDITS.md`.
