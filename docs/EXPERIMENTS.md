@@ -34,3 +34,11 @@ Single-puzzle diagnostics (practice_0003, independent, start {2,16}):
 - Exhaustive depth-6 enumeration from {2,16} (123,774 values): the first target is not `x±y` of two such values, so the bootstrap is inherently expensive for tiny start sets.
 
 Leaderboard check (2026-11-24, `kaggle competitions leaderboard`): **top 125,289**, about 4.66 per target overall.
+
+## Constructor v4 (ab8: 2 puzzles per non-tiny family, 160 s on 1 thread, 20 s per puzzle)
+| id | solver | config | total | Δ |
+|---|---|---|---|---|
+| E14a | v3 | default | 1,359 | ref |
+| E14b | v4 | pool cap 88 (random 64–120) + `--fresh-polish 2` | **1,253** | **−7.8%**, better on 8/8 puzzles |
+
+Polish move variants (30 s, our run-1 programs): one root only gave 187/117, and adding two-root moves at 30% (v5) gave 185/121. That's within noise, so two-root stays at 30% as the public write-up measured (+15% yield).

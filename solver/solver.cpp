@@ -856,40 +856,56 @@ struct Polisher {
         return best.empty() ? -1 : 3;
     }
 
-    // one move on node list nd (topological, DCE'd). Returns new program length or -1.
-    int move(vector<Node> &nd, int ns, int v, bool allowEqual, vector<Instr> &outProg, vector<Node> &outNodes) {
+    // one move on node list nd (topological, DCE'd): remove the joint private cone of `roots`, rebuild each root's
+    // value with <= 3 new instructions (total <= cone size). Returns new program length or -1.
+    int move(vector<Node> &nd, int ns, vector<int> roots, bool allowEqual, vector<Instr> &outProg, vector<Node> &outNodes) {
         int N = nd.size();
-        if (v < ns || v >= N) return -1;
+        sort(roots.begin(), roots.end());
+        roots.erase(unique(roots.begin(), roots.end()), roots.end());
+        for (int v : roots) if (v < ns || v >= N) return -1;
         vector<vector<int>> cons(N);
         for (int i = ns; i < N; i++) { cons[nd[i].a].push_back(i); if (nd[i].b != nd[i].a) cons[nd[i].b].push_back(i); }
-        // target producers (first producer of each target not in start)
         vector<char> tp(N, 0), cov(P.tg.size(), 0);
         for (int k = 0; k < ns; k++) { int t = tIndex(P.tg, nd[k].v); if (t >= 0) cov[t] = 1; }
         for (int i = ns; i < N; i++) { int t = tIndex(P.tg, nd[i].v); if (t >= 0 && !cov[t]) { cov[t] = 1; tp[i] = 1; } }
-        vector<char> inS(N, 0);
-        inS[v] = 1; int k = 1;
-        for (int u = v - 1; u >= ns; u--) {
-            if (tp[u] || cons[u].empty()) continue;
+        vector<char> inS(N, 0), isRoot(N, 0);
+        int k = 0;
+        for (int v : roots) { inS[v] = 1; isRoot[v] = 1; k++; }
+        for (int u = roots.back() - 1; u >= ns; u--) {
+            if (isRoot[u] || tp[u] || cons[u].empty()) continue;
             bool all = true;
             for (int c : cons[u]) if (!inS[c]) { all = false; break; }
             if (all) { inS[u] = 1; k++; }
         }
         vector<char> desc(N, 0);
-        desc[v] = 1;
-        for (int i = v + 1; i < N; i++) if (desc[nd[i].a] || desc[nd[i].b]) desc[i] = 1;
+        for (int v : roots) desc[v] = 1;
+        for (int i = roots.front() + 1; i < N; i++) {
+            if (desc[nd[i].a] || desc[nd[i].b]) { if (isRoot[i]) return -1; desc[i] = 1; }
+        }
         av.clear(); an.clear(); amap.clear();
         for (int i = 0; i < N; i++) if (!inS[i] && !desc[i] && !amap.count(nd[i].v)) { amap[nd[i].v] = av.size(); av.push_back(nd[i].v); an.push_back(i); }
-        int K = min(allowEqual ? k : k - 1, 3);
-        if (K < 0) return -1;
-        vector<RStep> st;
-        int c = rebuild(nd[v].v, K, st);
-        if (c < 0) return -1;
-        // assemble: kept old nodes + new steps; consumers of v redirect to final step (or to the available node with same value)
-        int finalRef;
-        if (c == 0) finalRef = an[amap[nd[v].v]];
-        else finalRef = -(int)st.size();
-        int M = st.size();
-        // item ids: old node i -> i ; new step s -> N + s
+        int budgetLeft = allowEqual ? k : k - 1;
+        if (budgetLeft < 0) return -1;
+        vector<RStep> all;
+        vector<int> finalId(N, -1);  // root -> item id of its replacement
+        vector<double> stepKey;
+        for (int v : roots) {
+            vector<RStep> st;
+            int c = rebuild(nd[v].v, min(budgetLeft, 3), st);
+            if (c < 0) return -1;
+            budgetLeft -= c;
+            if (c == 0) { finalId[v] = an[amap[nd[v].v]]; continue; }
+            int base = all.size();
+            for (size_t s2 = 0; s2 < st.size(); s2++) {
+                RStep r = st[s2];
+                if (r.a < 0) r.a = -(base + (-r.a - 1)) - 1;
+                if (r.b < 0) r.b = -(base + (-r.b - 1)) - 1;
+                all.push_back(r);
+                stepKey.push_back(v - 0.5 + 1e-3 * s2);
+            }
+            finalId[v] = N + (int)all.size() - 1;
+        }
+        int M = all.size();
         auto refId = [&](int r) { return r >= 0 ? r : N + (-r - 1); };
         int tot = N + M;
         vector<int> opa(tot, -1), opb(tot, -1);
@@ -900,17 +916,16 @@ struct Polisher {
             alive[i] = 1; key[i] = i;
             if (i >= ns) {
                 int a = nd[i].a, b = nd[i].b;
-                if (a == v) a = (finalRef >= 0 ? finalRef : refId(finalRef));
-                if (b == v) b = (finalRef >= 0 ? finalRef : refId(finalRef));
+                if (isRoot[a]) a = finalId[a];
+                if (isRoot[b]) b = finalId[b];
                 opa[i] = a; opb[i] = b;
             }
         }
-        for (int s = 0; s < M; s++) {
-            int id = N + s;
-            alive[id] = 1; key[id] = v - 0.5 + 1e-3 * s;
-            opa[id] = refId(st[s].a); opb[id] = refId(st[s].b);
+        for (int s2 = 0; s2 < M; s2++) {
+            int id = N + s2;
+            alive[id] = 1; key[id] = stepKey[s2];
+            opa[id] = refId(all[s2].a); opb[id] = refId(all[s2].b);
         }
-        // Kahn with priority
         vector<int> indeg(tot, 0);
         vector<vector<int>> out(tot);
         for (int i = 0; i < tot; i++) {
@@ -933,8 +948,8 @@ struct Polisher {
         outNodes.clear();
         for (int i : order) {
             if (i < ns) { outNodes.push_back(nd[i]); continue; }
-            u64 val = i < N ? nd[i].v : st[i - N].v;
-            char op = i < N ? nd[i].op : st[i - N].op;
+            u64 val = i < N ? nd[i].v : all[i - N].v;
+            char op = i < N ? nd[i].op : all[i - N].op;
             outNodes.push_back({val, op, pos[opa[i]], pos[opb[i]]});
         }
         for (int i = 0; i < ns; i++) if (pos[i] != i) return -1;
@@ -965,7 +980,14 @@ static vector<Instr> polishProgram(const Puzzle &P, const vector<Instr> &prog0, 
             if (nowSec() >= end) break;
             if (v >= (int)nd.size()) continue;
             vector<Instr> np;
-            int L = PO.move(nd, ns, v, true, np, nn);
+            vector<int> roots{v};
+            if (rng() % 10 < 3) {  // two-root move: a sibling sharing an operand with v
+                vector<int> sib;
+                for (int i = ns; i < (int)nd.size(); i++)
+                    if (i != v && (nd[i].a == nd[v].a || nd[i].b == nd[v].b || nd[i].a == nd[v].b || nd[i].b == nd[v].a)) sib.push_back(i);
+                if (!sib.empty()) roots.push_back(sib[rng() % sib.size()]);
+            }
+            int L = PO.move(nd, ns, roots, true, np, nn);
             moves++;
             if (L < 0 || L > (int)cur.size()) continue;
             if (L < (int)cur.size()) { improved++; any = true; }
