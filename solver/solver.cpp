@@ -613,6 +613,28 @@ static vector<u64> seedCands(const Puzzle &P) {
         if (!dup) out.push_back(a);
         if (out.size() >= 16) break;
     }
+    // partners: cofactors q = round(t/s) of targets explained by a found seed s (|t - q*s| <= C*64);
+    // keep q in [2^12, 2^24] that occur for >= 2 targets or that are themselves sieve candidates.
+    {
+        map<u64, int> cnt;
+        vector<u64> base = out;
+        for (u64 sd : base)
+            for (u64 v : t) {
+                u64 q = (v + sd / 2) / sd;
+                if (q < (1 << 12) || q > (1ULL << 24)) continue;
+                u128 qs = (u128)q * sd;
+                u128 off = qs > v ? qs - v : v - qs;
+                if (off <= (u128)C * 64) cnt[q]++;
+            }
+        for (auto &kv : cnt) {
+            if (kv.second < 2) continue;
+            u64 a = kv.first; bool dup = false;
+            for (u64 b : out)
+                for (u64 k = 1; k <= 16 && !dup; k++)
+                    for (u64 l = 1; l <= 16; l++) if (a * l == b * k) { dup = true; break; }
+            if (!dup && out.size() < 24) out.push_back(a);
+        }
+    }
     lock_guard<mutex> lg(seedMu);
     seedCache[P.id] = out;
     return out;
