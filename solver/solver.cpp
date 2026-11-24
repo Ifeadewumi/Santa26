@@ -718,17 +718,19 @@ static bool applyOv(Params &p) {  // returns false if the params' mode is disabl
     return (OV.modeMask >> p.mode) & 1;
 }
 
-// Arms = (ordering mode, gcd seeding). Credit = instructions saved by a randomized run, per try.
-static const int NARM = 6;
+// Arms = (ordering mode, gcd seeding, L2 table). Credit = instructions saved per second of run time.
+static const int NARM = 12;
 static mutex banditMu;
-static double armGain[NARM], armTries[NARM];
-static int armOf(const Params &p) { return p.mode * 2 + (p.gcd ? 1 : 0); }
-static bool armAllowed(int a) { return ((OV.modeMask >> (a / 2)) & 1) && !(OV.noGcd && (a & 1)); }
+static double armGain[NARM], armTries[NARM];  // armTries holds seconds spent
+static int armOf(const Params &p) { return p.mode * 4 + (p.gcd ? 2 : 0) + (p.L2 ? 1 : 0); }
+static bool armAllowed(int a) {
+    return ((OV.modeMask >> (a / 4)) & 1) && !(OV.noGcd && (a & 2)) && !(OV.noL2 && (a & 1));
+}
 static int pickArm(mt19937_64 &rng) {
     double w[NARM], tot = 0;
     {
         lock_guard<mutex> lg(banditMu);
-        for (int a = 0; a < NARM; a++) w[a] = armAllowed(a) ? (armGain[a] + 0.5) / (armTries[a] + 5.0) : 0.0;
+        for (int a = 0; a < NARM; a++) w[a] = armAllowed(a) ? (armGain[a] + 0.5) / (armTries[a] + 5.0) : 0.0;  // saved per second
     }
     int nAllowed = 0;
     for (int a = 0; a < NARM; a++) nAllowed += armAllowed(a);
@@ -741,23 +743,23 @@ static int pickArm(mt19937_64 &rng) {
     double x = U(rng) * tot;
     for (int a = 0; a < NARM; a++) { x -= w[a]; if (x <= 0 && w[a] > 0) return a; }
     for (int a = NARM - 1; a >= 0; a--) if (armAllowed(a)) return a;
-    return 2;
+    return 4;
 }
-static void creditArm(int a, double gain) { lock_guard<mutex> lg(banditMu); armGain[a] += gain; armTries[a] += 1; }
+static void creditArm(int a, double gain, double secs) { lock_guard<mutex> lg(banditMu); armGain[a] += gain; armTries[a] += secs; }
 
 // ------------------------------------------------------------------ portfolio per puzzle
 static Params randomParams(mt19937_64 &rng) {
     uniform_real_distribution<double> U(0, 1);
     Params p;
     int arm = pickArm(rng);
-    p.mode = arm / 2;
-    p.gcd = arm & 1;
+    p.mode = arm / 4;
+    p.gcd = (arm >> 1) & 1;
     p.gcdDrop = U(rng) < 0.5 ? 0.0 : 0.3 * U(rng);
     static const int beams[] = {8, 16, 24, 32, 48, 64, 96};
     p.beam = beams[rng() % 7];
     p.termK = 2 + rng() % 10;
     p.w = 0.08f + 0.27f * (float)U(rng);
-    p.L2 = U(rng) < 0.8;
+    p.L2 = arm & 1;
     p.rootWide = U(rng) < 0.6;
     p.additive = U(rng) < 0.6;
     p.addK = 1 + rng() % 5;
@@ -822,8 +824,9 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
         Params p = randomParams(rng);
         vector<Instr> prog;
         size_t before = best.prog.size();
+        double rs = nowSec();
         if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) consider(prog, "R " + tagOf(p));
-        creditArm(armOf(p), (double)before - (double)best.prog.size());
+        creditArm(armOf(p), (double)before - (double)best.prog.size(), nowSec() - rs);
         best.runs++;
     }
     if (best.have && (int)best.prog.size() <= lb) best.optimal = true;
@@ -968,8 +971,8 @@ int main(int argc, char **argv) {
     writeProgs(of, ps, res);
     long long sc = 0; int have = 0;
     for (auto &r : res) if (r.have) { sc += r.prog.size(); have++; }
-    fprintf(stderr, "BANDIT arm(mode,gcd) gain/tries:");
-    for (int a = 0; a < NARM; a++) fprintf(stderr, " m%d%s=%.0f/%.0f", a / 2, (a & 1) ? "g" : "", armGain[a], armTries[a]);
+    fprintf(stderr, "BANDIT arm(mode,gcd,L2) saved/seconds:");
+    for (int a = 0; a < NARM; a++) fprintf(stderr, " m%d%s%s=%.0f/%.0fs", a / 4, (a & 2) ? "g" : "", (a & 1) ? "L2" : "", armGain[a], armTries[a]);
     fprintf(stderr, "\n");
     if (!statsFile.empty()) { ofstream sf(statsFile); for (int a = 0; a < NARM; a++) sf << armGain[a] << ' ' << armTries[a] << '\n'; }
     fprintf(stderr, "DONE solved=%d/%d score=%lld improved_vs_init=%lld time=%.0fs\n", have, N, sc, improvedSum, nowSec() - gStart);

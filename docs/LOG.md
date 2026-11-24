@@ -47,3 +47,8 @@ Takeaways: "independent" and "mixed" (random large targets) dominate the remaini
 
 ## 6. Ablation results (v2 binary, practice set, 300 s per config)
 Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is essential. At 6 s per puzzle, speed dominates and the expensive components (L2 table, additive moves) are net negative. The per-try bandit was the wrong metric and hurt slightly. Next: per-second bandit credit with L2 as an arm, and re-test at a representative budget (about 30 s per puzzle) with a repeat seed to measure noise.
+
+## 7. Bandit v2 and a representative-budget experiment
+- Bandit arms are now (ordering mode × gcd seeding × L2 table), 12 in total. Credit is instructions saved per **second** of run time, and the prior is `(saved+0.5)/(seconds+5)`, keeping 15% uniform exploration.
+- Dev subset `sub48`: the first 12 practice puzzles of each non-tiny family (tiny is already near optimal). Budget 360 s on 4 threads, about 30 s per puzzle, close to the planned scored-run budget.
+- Configs: v3 base (seed 2026), v3 `--ablate deep`, v3 `--ablate L2`, and v3 base with seed 7 (noise estimate).
