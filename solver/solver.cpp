@@ -841,6 +841,279 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
     return best;
 }
 
+// ------------------------------------------------------------------ value-graph local search (polish)
+// Move: pick a value v, remove its private cone S (v plus ancestors used only inside S and not needed as a
+// target producer), rebuild value(v) exactly with <= min(|S|,3) new instructions from all values that are
+// neither in S nor descendants of v, re-schedule (stable Kahn order), DCE + register allocation, strict replay.
+// Accept if not longer (plateau walk).
+static bool progToNodes(const Puzzle &P, const vector<Instr> &prog, vector<Node> &nd) {
+    nd.clear();
+    int ns = P.start.size();
+    vector<int> rn(P.R, -1);
+    for (int k = 0; k < ns; k++) { nd.push_back({P.start[k], 0, -1, -1}); rn[k] = k; }
+    for (auto &in : prog) {
+        int a = rn[in.i], b = rn[in.j];
+        if (a < 0 || b < 0) return false;
+        u64 r;
+        if (!doOp(in.op, nd[a].v, nd[b].v, P.limit, r)) return false;
+        nd.push_back({r, in.op, a, b});
+        rn[in.d] = nd.size() - 1;
+    }
+    return true;
+}
+
+struct RStep { char op; int a, b; u64 v; };
+
+struct OpenMap {  // u64 -> u32, open addressing, cleared by generation stamps
+    vector<u64> k; vector<uint32_t> val; vector<uint32_t> gen; uint32_t g = 1; u64 mask = 0;
+    void reset(size_t n) {
+        size_t cap = 1024; while (cap < 2 * n) cap <<= 1;
+        if (k.size() < cap) { k.assign(cap, 0); val.assign(cap, 0); gen.assign(cap, 0); g = 1; }
+        else if (++g == 0) { fill(gen.begin(), gen.end(), 0); g = 1; }
+        mask = k.size() - 1;
+    }
+    inline bool put(u64 key, uint32_t v) {
+        u64 i = mix64(key) & mask;
+        while (gen[i] == g) { if (k[i] == key) return false; i = (i + 1) & mask; }
+        gen[i] = g; k[i] = key; val[i] = v; return true;
+    }
+    inline bool has(u64 key) const { return get(key) >= 0; }
+    inline int64_t get(u64 key) const {
+        u64 i = mix64(key) & mask;
+        while (gen[i] == g) { if (k[i] == key) return val[i]; i = (i + 1) & mask; }
+        return -1;
+    }
+};  // operand refs: >=0 node id, <0 => new step -(s+1)
+
+struct Polisher {
+    const Puzzle &P;
+    mt19937_64 &rng;
+    vector<u64> av; vector<int> an;               // available values / node ids
+    unordered_map<u64, int> amap;                 // value -> index in av
+    OpenMap p1; vector<u64> p1keys;               // one-step values: packed (i<<14 | j<<2 | op)
+    Polisher(const Puzzle &p, mt19937_64 &r) : P(p), rng(r) {}
+
+    // inverse candidates: list of (needed y, op, xFirst) s.t. t = x op y (xFirst) or t = y op x
+    template <class F> void inv(u64 t, u64 x, F f) {
+        const u64 lim = P.limit;
+        if (t > x) f(t - x, '+', true);
+        if (x > t) f(x - t, '-', true);           // x - y = t
+        if (t <= lim - x) f(t + x, '-', false);   // y - x = t
+        if (t % x == 0) f(t / x, '*', true);
+        if (x > t && x % t == 0) f(x / t, '/', true);   // x / y = t
+        if ((u128)t * x <= lim) f(t * x, '/', false);  // y / x = t
+    }
+
+    // find a recipe for t with at most K new instructions; returns cost or -1. steps filled (operands as node refs/new steps)
+    int rebuild(u64 t, int K, vector<RStep> &best) {
+        best.clear();
+        int n = av.size();
+        auto A = [&](u64 v) -> int { auto it = amap.find(v); return it == amap.end() ? -1 : it->second; };
+        if (A(t) >= 0) return 0;
+        if (K < 1) return -1;
+        // cost 1
+        vector<vector<RStep>> sols;
+        for (int i = 0; i < n; i++) {
+            inv(t, av[i], [&](u64 y, char op, bool xf) {
+                int j = A(y);
+                if (j < 0) return;
+                sols.push_back({xf ? RStep{op, an[i], an[j], t} : RStep{op, an[j], an[i], t}});
+            });
+            if (sols.size() > 8) break;
+        }
+        if (!sols.empty()) { best = sols[rng() % sols.size()]; return 1; }
+        if (K < 2) return -1;
+        // one-step table P1 (values not already available)
+        p1.reset((size_t)n * n * 3); p1keys.clear();
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++) {
+                u64 a = av[i], b = av[j], r;
+                const char ops[4] = {'+', '*', '-', '/'};
+                for (char op : ops) {
+                    if ((op == '+' || op == '*') && i > j) continue;
+                    if (!doOp(op, a, b, P.limit, r) || amap.count(r)) continue;
+                    if (p1.put(r, (uint32_t)i << 14 | (uint32_t)j << 2 | (op == '+' ? 0 : op == '*' ? 1 : op == '-' ? 2 : 3))) p1keys.push_back(r);
+                }
+            }
+        auto p1step = [&](u64 x) -> RStep {
+            uint32_t pk = (uint32_t)p1.get(x);
+            int i = pk >> 14, j = (pk >> 2) & 4095, k = pk & 3;
+            const char ops[4] = {'+', '*', '-', '/'};
+            return RStep{ops[k], an[i], an[j], x};
+        };
+        // cost 2: t = x op c, x in P1, c in A (or c == x)
+        auto score = [&](const vector<RStep> &s) { u64 m = 0; for (auto &x : s) m = max(m, x.v); return m; };
+        u64 bestScore = ~0ULL;
+        auto offer = [&](vector<RStep> s) {
+            u64 sc = score(s) ^ (rng() & 0xFF);  // prefer small new values, random tie-break
+            if (best.empty() || sc < bestScore) { best = s; bestScore = sc; }
+        };
+        for (int c = 0; c < n; c++)
+            inv(t, av[c], [&](u64 x, char op, bool cf) {
+                if (!p1.has(x)) return;
+                RStep s0 = p1step(x);
+                RStep s1 = cf ? RStep{op, an[c], -1, t} : RStep{op, -1, an[c], t};
+                offer({s0, s1});
+            });
+        if (t % 2 == 0 && p1.has(t / 2)) offer({p1step(t / 2), RStep{'+', -1, -1, t}});
+        {
+            u64 s = (u64)sqrtl((long double)t);
+            while (s * s > t) s--;
+            while ((s + 1) * (s + 1) <= t) s++;
+            if (s * s == t && p1.has(s)) offer({p1step(s), RStep{'*', -1, -1, t}});
+        }
+        if (!best.empty()) return 2;
+        if (K < 3) return -1;
+        // cost 3 (i): t = y op d, y = x op c, x in P1
+        for (int d = 0; d < n; d++)
+            inv(t, av[d], [&](u64 y, char op1, bool df) {
+                if (amap.count(y)) return;
+                for (int c = 0; c < n; c++)
+                    inv(y, av[c], [&](u64 x, char op2, bool cf) {
+                        if (!p1.has(x)) return;
+                        RStep s0 = p1step(x);
+                        RStep s1 = cf ? RStep{op2, an[c], -1, y} : RStep{op2, -1, an[c], y};
+                        RStep s2 = df ? RStep{op1, an[d], -2, t} : RStep{op1, -2, an[d], t};
+                        offer({s0, s1, s2});
+                    });
+            });
+        // cost 3 (ii): t = x op y, x, y in P1
+        for (u64 x : p1keys) {
+            inv(t, x, [&](u64 y, char op, bool xf) {
+                if (!p1.has(y) || y == x) return;
+                RStep sx = p1step(x), sy = p1step(y);
+                RStep s2 = xf ? RStep{op, -1, -2, t} : RStep{op, -2, -1, t};
+                offer({sx, sy, s2});
+            });
+        }
+        return best.empty() ? -1 : 3;
+    }
+
+    // one move on node list nd (topological, DCE'd). Returns new program length or -1.
+    int move(vector<Node> &nd, int ns, int v, bool allowEqual, vector<Instr> &outProg, vector<Node> &outNodes) {
+        int N = nd.size();
+        if (v < ns || v >= N) return -1;
+        vector<vector<int>> cons(N);
+        for (int i = ns; i < N; i++) { cons[nd[i].a].push_back(i); if (nd[i].b != nd[i].a) cons[nd[i].b].push_back(i); }
+        // target producers (first producer of each target not in start)
+        vector<char> tp(N, 0), cov(P.tg.size(), 0);
+        for (int k = 0; k < ns; k++) { int t = tIndex(P.tg, nd[k].v); if (t >= 0) cov[t] = 1; }
+        for (int i = ns; i < N; i++) { int t = tIndex(P.tg, nd[i].v); if (t >= 0 && !cov[t]) { cov[t] = 1; tp[i] = 1; } }
+        vector<char> inS(N, 0);
+        inS[v] = 1; int k = 1;
+        for (int u = v - 1; u >= ns; u--) {
+            if (tp[u] || cons[u].empty()) continue;
+            bool all = true;
+            for (int c : cons[u]) if (!inS[c]) { all = false; break; }
+            if (all) { inS[u] = 1; k++; }
+        }
+        vector<char> desc(N, 0);
+        desc[v] = 1;
+        for (int i = v + 1; i < N; i++) if (desc[nd[i].a] || desc[nd[i].b]) desc[i] = 1;
+        av.clear(); an.clear(); amap.clear();
+        for (int i = 0; i < N; i++) if (!inS[i] && !desc[i] && !amap.count(nd[i].v)) { amap[nd[i].v] = av.size(); av.push_back(nd[i].v); an.push_back(i); }
+        int K = min(allowEqual ? k : k - 1, 3);
+        if (K < 0) return -1;
+        vector<RStep> st;
+        int c = rebuild(nd[v].v, K, st);
+        if (c < 0) return -1;
+        // assemble: kept old nodes + new steps; consumers of v redirect to final step (or to the available node with same value)
+        int finalRef;
+        if (c == 0) finalRef = an[amap[nd[v].v]];
+        else finalRef = -(int)st.size();
+        int M = st.size();
+        // item ids: old node i -> i ; new step s -> N + s
+        auto refId = [&](int r) { return r >= 0 ? r : N + (-r - 1); };
+        int tot = N + M;
+        vector<int> opa(tot, -1), opb(tot, -1);
+        vector<double> key(tot);
+        vector<char> alive(tot, 0);
+        for (int i = 0; i < N; i++) {
+            if (inS[i]) continue;
+            alive[i] = 1; key[i] = i;
+            if (i >= ns) {
+                int a = nd[i].a, b = nd[i].b;
+                if (a == v) a = (finalRef >= 0 ? finalRef : refId(finalRef));
+                if (b == v) b = (finalRef >= 0 ? finalRef : refId(finalRef));
+                opa[i] = a; opb[i] = b;
+            }
+        }
+        for (int s = 0; s < M; s++) {
+            int id = N + s;
+            alive[id] = 1; key[id] = v - 0.5 + 1e-3 * s;
+            opa[id] = refId(st[s].a); opb[id] = refId(st[s].b);
+        }
+        // Kahn with priority
+        vector<int> indeg(tot, 0);
+        vector<vector<int>> out(tot);
+        for (int i = 0; i < tot; i++) {
+            if (!alive[i] || opa[i] < 0) continue;
+            if (!alive[opa[i]] || !alive[opb[i]]) return -1;
+            out[opa[i]].push_back(i); indeg[i]++;
+            if (opb[i] != opa[i]) { out[opb[i]].push_back(i); indeg[i]++; }
+        }
+        priority_queue<pair<double, int>, vector<pair<double, int>>, greater<pair<double, int>>> pq;
+        for (int i = 0; i < tot; i++) if (alive[i] && indeg[i] == 0) pq.push({key[i], i});
+        vector<int> order, pos(tot, -1);
+        while (!pq.empty()) {
+            int i = pq.top().second; pq.pop();
+            pos[i] = order.size(); order.push_back(i);
+            for (int j : out[i]) if (--indeg[j] == 0) pq.push({key[j], j});
+        }
+        int aliveCnt = 0;
+        for (int i = 0; i < tot; i++) aliveCnt += alive[i];
+        if ((int)order.size() != aliveCnt) return -1;
+        outNodes.clear();
+        for (int i : order) {
+            if (i < ns) { outNodes.push_back(nd[i]); continue; }
+            u64 val = i < N ? nd[i].v : st[i - N].v;
+            char op = i < N ? nd[i].op : st[i - N].op;
+            outNodes.push_back({val, op, pos[opa[i]], pos[opb[i]]});
+        }
+        for (int i = 0; i < ns; i++) if (pos[i] != i) return -1;
+        if (!finalizeSSA(P, outNodes, ns, outProg)) return -1;
+        if (!simulate(P, outProg)) return -1;
+        return outProg.size();
+    }
+};
+
+// Polish one program for `budget` seconds; returns the best program found (never longer than the input).
+static vector<Instr> polishProgram(const Puzzle &P, const vector<Instr> &prog0, double budget, mt19937_64 &rng, int &moves, int &improved) {
+    vector<Instr> best = prog0, cur = prog0;
+    vector<Node> nd, nn;
+    moves = improved = 0;
+    if (!progToNodes(P, cur, nd)) return best;
+    { vector<Instr> tmp; if (finalizeSSA(P, nd, P.start.size(), tmp) && simulate(P, tmp) && tmp.size() <= cur.size()) { cur = tmp; progToNodes(P, cur, nd); if (cur.size() < best.size()) best = cur; } }
+    Polisher PO(P, rng);
+    double end = nowSec() + budget;
+    int ns = P.start.size();
+    while (nowSec() < end) {
+        int N = nd.size();
+        if (N <= ns) break;
+        vector<int> ord(N - ns);
+        iota(ord.begin(), ord.end(), ns);
+        shuffle(ord.begin(), ord.end(), rng);
+        bool any = false, accepted = false;
+        for (int v : ord) {
+            if (nowSec() >= end) break;
+            if (v >= (int)nd.size()) continue;
+            vector<Instr> np;
+            int L = PO.move(nd, ns, v, true, np, nn);
+            moves++;
+            if (L < 0 || L > (int)cur.size()) continue;
+            if (L < (int)cur.size()) { improved++; any = true; }
+            accepted = true;
+            cur = np;
+            progToNodes(P, cur, nd);
+            if (cur.size() < best.size()) best = cur;
+            break;  // graph changed: restart sweep with fresh indices
+        }
+        (void)any;
+        if (!accepted) break;  // a full sweep found no acceptable move: converged
+    }
+    return best;
+}
+
 // ------------------------------------------------------------------ I/O
 static vector<Puzzle> readPuzzles(const string &fn) {
     ifstream f(fn);
@@ -884,6 +1157,7 @@ static void writeProgs(const string &fn, const vector<Puzzle> &ps, const vector<
 
 int main(int argc, char **argv) {
     string pf, of, inf, only, statsFile;
+    bool polishMode = false;
     double total = 600, maxPer = 1e18;
     int threads = max(1u, thread::hardware_concurrency());
     u64 seed = 2026;
@@ -899,6 +1173,7 @@ int main(int argc, char **argv) {
         else if (a == "--seed") seed = stoull(nx());
         else if (a == "--only") only = nx();
         else if (a == "--debug") DEBUG = true;
+        else if (a == "--polish") polishMode = true;
         else if (a == "--beam") OV.beam = stoi(nx());
         else if (a == "--termk") OV.termK = stoi(nx());
         else if (a == "--deepk") OV.deepK = stoi(nx());
@@ -958,7 +1233,17 @@ int main(int argc, char **argv) {
             Result init;
             { lock_guard<mutex> lg(mu); init = res[i]; }
             double t0 = nowSec();
-            Result r = solvePuzzle(ps[i], init, budget, seed, T, PL);
+            Result r;
+            if (polishMode) {
+                r = init;
+                if (init.have) {
+                    mt19937_64 prng(seed ^ mix64(std::hash<string>()(ps[i].id)));
+                    int mv, im;
+                    vector<Instr> np = polishProgram(ps[i], init.prog, budget, prng, mv, im);
+                    if (simulate(ps[i], np) && np.size() <= init.prog.size()) r.prog = np;
+                    r.runs = mv; r.tag = "polish improved=" + to_string(im);
+                }
+            } else r = solvePuzzle(ps[i], init, budget, seed, T, PL);
             lock_guard<mutex> lg(mu);
             int before = init.have ? (int)init.prog.size() : -1;
             res[i] = r;

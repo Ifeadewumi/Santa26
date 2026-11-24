@@ -58,3 +58,18 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Added `--debug` (per-target trace) and `--beam/--w/--termk/--deepk` overrides. A wider beam does not help, so the move set is the limit, not the search.
 - Leaderboard top is 125,289. The practice ratio (6.3) projects to about 170k on the scored set.
 - Started **scored run 1**: v3, 3,600 s, 4 threads, warm start from `sample_submission`, bandit statistics saved to `bandit.stats`.
+
+## 9. Closing the gap: research (user request), public frontier, value-graph polisher (v4)
+- **Public notebooks** (`kaggle kernels list --competition santa-2026 --sort-by voteCount`): read the method write-ups of 8 top notebooks. The most informative is "Santa 2026: Claude Coding | LB 128,524" (177 logged experiments). Its main points:
+  1. Local search on the value graph gives most of the gain: remove a value's private instructions, rebuild exactly with ≤3 new instructions, walk plateaus, prefer small new values.
+  2. Daily merges of public programs.
+  3. A backward beam for private chains.
+  4. Fresh constructors as new lineages ("every method decays; new sources move the score").
+  5. Random targets sit near an information floor of 5/6/7 instructions for 40/50/60-bit targets.
+  It also lists many failed ideas: toolkits, lattices, wider beams, removing the register limit.
+- Added `www.kaggleusercontent.com` to the `santa26` environment so notebook outputs can be downloaded (`kaggle kernels output`).
+- **Public frontier:** per-puzzle best of 11 public output files (all re-verified by `elf.check_program`) = **128,324**. That equals the best single file, so the public lineage has converged.
+- **Solver v4:** added `polishProgram` and `--polish`. The move removes value v's private cone S and rebuilds value(v) exactly with ≤min(|S|,3) new instructions from all non-descendant values (1-step and 2-step tables plus two meet-in-the-middle forms). Then a stable Kahn re-schedule, DCE, linear-scan allocation and strict replay. Equal-length results are accepted. The one-step table uses an open-addressing map.
+- Polisher trials, 30 s on 1 thread:
+  - Frontier programs scored_0001 (219), scored_0104 (221) and scored_0500 (75): no change, as expected for converged programs.
+  - Positive control on our run-1 programs: scored_0606 199→187 and scored_0542 128→117. The polisher works, but our raw lineage is about 20–25% above the frontier on these (151, 99).
