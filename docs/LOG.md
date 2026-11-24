@@ -150,3 +150,12 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - **Submitted** `submission_own.csv` (own lineage only, user's threshold was <160,079): **public 149,008**. The team's best remains the frontier merge at 128,311.
 - Wave 2: Kaggle `elf-v9-00..04` (v9 = seeds + pool cap + construct/polish + beam rebuild, shards 0–4, 3 h) and local run 3 (v9, shards 5–9, 7,000 s), both warm-started from the 149,008 own lineage.
 - The poller for wave 1 hit the background-task time limit and was stopped; status was checked directly instead.
+
+## 16. Public engines (user approved running them)
+- Safety scan of `elfopt.cpp` and the optimizer/strategy sources: no shell, network, fork/exec or file deletion. I/O is stdin/stdout plus an optional dump file.
+- Local test on 6 frontier puzzles:
+  - (a) `--time 45 --kicks 1000 --kslack 2`: **0 gains** (converged).
+  - (b) `--construct 5 --crand 3 --time 60` (fresh lineage + LNS): 16–21% above the frontier (e.g. 151→179, 99→120), about the same as our own lineage.
+- `kaggle_shards.py` gained `--engine elfopt --engine-src … [--variants file]`. Each shard runs one engine process per CPU over its frontier programs plus extra start variants, with a per-block time that fills the budget, verifies every result and writes `out.txt`.
+- Variant starts (`variants.txt`): per puzzle up to 2 distinct programs within +1 of the frontier, ours first, then other public lineages.
+- Plan: after Kaggle wave 2 finishes, run a frontier LNS wave (5 shards × 3 h) and measure yield per hour to project the top-50 effort.
