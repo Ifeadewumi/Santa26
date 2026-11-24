@@ -73,3 +73,19 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Polisher trials, 30 s on 1 thread:
   - Frontier programs scored_0001 (219), scored_0104 (221) and scored_0500 (75): no change, as expected for converged programs.
   - Positive control on our run-1 programs: scored_0606 199→187 and scored_0542 128→117. The polisher works, but our raw lineage is about 20–25% above the frontier on these (151, 99).
+
+## 10. Solver v4 constructor changes
+- `poolCap`: the builder's value pool may exceed the 48 registers, and final register allocation decides whether the program fits (failed runs are discarded). Single-run probe on practice_0003/0010/0020:
+
+  | cap | lengths |
+  |---|---|
+  | 48 | 275/144/105 |
+  | 64 | 258/138/103 |
+  | 72 | 254/137/103 |
+  | 88 | 245/136/102 |
+  | 120 | 248/132/102 |
+  | ≥160 | the largest program fails allocation |
+
+  Defaults: fixed runs use 88, plus one fixed run at 48 that always fits. Random runs draw from {64,72,88,88,104,120}. `--poolcap` forces a value.
+- `--fresh-polish SEC`: every constructed program within 15% of the current best gets SEC seconds of value-graph polish before comparison (construct + polish, the "new lineage" method).
+- A/B started on 8 practice puzzles (2 per non-tiny family, 20 s each, 1 thread): v3 against v4 with `--fresh-polish 2`.

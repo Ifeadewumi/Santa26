@@ -23,6 +23,7 @@ typedef __uint128_t u128;
 
 static const int INF = 1000000;
 static bool DEBUG = false;
+static double FRESH_POLISH = 0;  // seconds of value-graph polish per constructed program (0 = off)
 
 static inline double nowSec() {
     return chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
@@ -241,6 +242,7 @@ struct Params {
     int deepK = 2;
     int addK = 3;
     u64 smallKeep = 64;    // pool values <= this are evicted last
+    int poolCap = 88;      // max live pool values (may exceed R; register allocation decides at the end)
     bool fallbackOnly = false;
 };
 
@@ -475,7 +477,7 @@ struct Builder {
     vector<char> cov; int uncovered;
     u64 smallKeep;
 
-    Builder(const Puzzle &p, u64 sk) : P(p), lim(p.limit), R(p.R), smallKeep(sk) {
+    Builder(const Puzzle &p, u64 sk, int cap) : P(p), lim(p.limit), R(max(cap, (int)p.start.size() + 2)), smallKeep(sk) {
         cov.assign(P.tg.size(), 0); uncovered = P.tg.size();
         for (size_t k = 0; k < P.start.size(); k++) {
             u64 v = P.start[k];
@@ -567,7 +569,7 @@ static vector<u64> gcdCands(const vector<u64> &tg, const vector<char> &cov, mt19
 // ------------------------------------------------------------------ one greedy run
 static bool runStrategy(const Puzzle &P, const Params &p, Tables &T, Planner &PL, mt19937_64 &rng,
                         vector<Instr> &out, double deadline, bool mustFinish) {
-    Builder B(P, p.smallKeep);
+    Builder B(P, p.smallKeep, p.poolCap);
     Params pe = p; pe.rootWide = false; pe.additive = false; pe.deep = false; pe.maxDepth = min(p.maxDepth, 24);
     bool fresh = false;  // tables match the current pool
     auto doTarget = [&](u64 t) -> bool {
@@ -705,141 +707,6 @@ struct Exact {
         return 0;
     }
 };
-
-// ------------------------------------------------------------------ ablation switches + strategy bandit
-struct Overrides {
-    bool noDeep = false, noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
-    int modeMask = 7;  // bit m set => ordering mode m allowed
-    int beam = 0, termK = -1, deepK = -1; float w = -1;  // diagnostics: force search params
-} OV;
-
-static bool applyOv(Params &p) {  // returns false if the params' mode is disabled
-    if (OV.noL2) p.L2 = false;
-    if (OV.noAdd) p.additive = false;
-    if (OV.noRootWide) p.rootWide = false;
-    if (OV.noGcd) p.gcd = false;
-    if (OV.noDeep) p.deep = false;
-    if (OV.beam > 0) p.beam = OV.beam;
-    if (OV.termK >= 0) p.termK = OV.termK;
-    if (OV.deepK >= 0) p.deepK = OV.deepK;
-    if (OV.w >= 0) p.w = OV.w;
-    return (OV.modeMask >> p.mode) & 1;
-}
-
-// Arms = (ordering mode, gcd seeding, L2 table). Credit = instructions saved per second of run time.
-static const int NARM = 12;
-static mutex banditMu;
-static double armGain[NARM], armTries[NARM];  // armTries holds seconds spent
-static int armOf(const Params &p) { return p.mode * 4 + (p.gcd ? 2 : 0) + (p.L2 ? 1 : 0); }
-static bool armAllowed(int a) {
-    return ((OV.modeMask >> (a / 4)) & 1) && !(OV.noGcd && (a & 2)) && !(OV.noL2 && (a & 1));
-}
-static int pickArm(mt19937_64 &rng) {
-    double w[NARM], tot = 0;
-    {
-        lock_guard<mutex> lg(banditMu);
-        for (int a = 0; a < NARM; a++) w[a] = armAllowed(a) ? (armGain[a] + 0.5) / (armTries[a] + 5.0) : 0.0;  // saved per second
-    }
-    int nAllowed = 0;
-    for (int a = 0; a < NARM; a++) nAllowed += armAllowed(a);
-    for (int a = 0; a < NARM; a++) tot += w[a];
-    uniform_real_distribution<double> U(0, 1);
-    if (OV.noBandit || U(rng) < 0.15 || tot <= 0) {  // exploration / uniform
-        int k = rng() % nAllowed;
-        for (int a = 0; a < NARM; a++) if (armAllowed(a) && k-- == 0) return a;
-    }
-    double x = U(rng) * tot;
-    for (int a = 0; a < NARM; a++) { x -= w[a]; if (x <= 0 && w[a] > 0) return a; }
-    for (int a = NARM - 1; a >= 0; a--) if (armAllowed(a)) return a;
-    return 4;
-}
-static void creditArm(int a, double gain, double secs) { lock_guard<mutex> lg(banditMu); armGain[a] += gain; armTries[a] += secs; }
-
-// ------------------------------------------------------------------ portfolio per puzzle
-static Params randomParams(mt19937_64 &rng) {
-    uniform_real_distribution<double> U(0, 1);
-    Params p;
-    int arm = pickArm(rng);
-    p.mode = arm / 4;
-    p.gcd = (arm >> 1) & 1;
-    p.gcdDrop = U(rng) < 0.5 ? 0.0 : 0.3 * U(rng);
-    static const int beams[] = {8, 16, 24, 32, 48, 64, 96};
-    p.beam = beams[rng() % 7];
-    p.termK = 2 + rng() % 10;
-    p.w = 0.08f + 0.27f * (float)U(rng);
-    p.L2 = arm & 1;
-    p.rootWide = U(rng) < 0.6;
-    p.additive = U(rng) < 0.6;
-    p.addK = 1 + rng() % 5;
-    p.deep = U(rng) < 0.8;
-    p.deepK = 1 + rng() % 4;
-    static const u64 sk[] = {8, 64, 1024, 100000};
-    p.smallKeep = sk[rng() % 4];
-    applyOv(p);
-    return p;
-}
-
-struct Result { vector<Instr> prog; bool have = false; int runs = 0; bool optimal = false; string tag = "init"; };
-
-static string tagOf(const Params &p) {
-    char b[160];
-    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d dp%d/%d sk%llu%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
-             (int)p.rootWide, (int)p.additive, p.addK, (int)p.deep, p.deepK, (unsigned long long)p.smallKeep, p.fallbackOnly ? " FB" : "");
-    return b;
-}
-
-static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u64 seed, Tables &T, Planner &PL) {
-    double t0 = nowSec(), deadline = t0 + budget;
-    mt19937_64 rng(seed ^ mix64(std::hash<string>()(P.id)));
-    Result best = init;
-    int lb = 0;
-    {
-        vector<char> c(P.tg.size(), 0);
-        for (u64 v : P.start) { int t = tIndex(P.tg, v); if (t >= 0) c[t] = 1; }
-        for (char x : c) lb += !x;
-    }
-    auto consider = [&](vector<Instr> &prog, const string &tag) {
-        if (!simulate(P, prog)) return;
-        if (!best.have || prog.size() < best.prog.size()) { best.prog = prog; best.have = true; best.tag = tag; }
-    };
-    if (best.have && (int)best.prog.size() <= lb) { best.optimal = true; return best; }
-
-    vector<Params> fixed;
-    { Params p; p.mode = 1; fixed.push_back(p); }
-    { Params p; p.mode = 0; fixed.push_back(p); }
-    { Params p; p.mode = 1; p.gcd = true; fixed.push_back(p); }
-    { Params p; p.mode = 1; p.beam = 64; p.termK = 10; p.w = 0.14f; fixed.push_back(p); }
-    { Params p; p.mode = 0; p.gcd = true; p.L2 = false; fixed.push_back(p); }
-
-    for (size_t k = 0; k < fixed.size() || !best.have; k++) {
-        if (best.have && nowSec() > deadline) break;
-        vector<Instr> prog;
-        Params p = k < fixed.size() ? fixed[k] : Params();
-        if (k >= fixed.size()) p.fallbackOnly = true;
-        else if (!applyOv(p)) continue;
-        if (runStrategy(P, p, T, PL, rng, prog, deadline, !best.have)) consider(prog, "F" + to_string(k) + " " + tagOf(p));
-        best.runs++;
-        if (k > fixed.size() + 2) break;
-        if (k == 0 && !OV.noExact && P.limit <= (1u << 20) && best.have && (int)best.prog.size() > lb) {
-            Exact ex(P, t0 + max(1.0, budget * 0.6));
-            vector<Instr> eo;
-            int r = ex.solve((int)best.prog.size() - 1, eo);
-            if (r == 1) { consider(eo, "exact"); best.optimal = true; return best; }
-            if (r == 0) { best.optimal = true; return best; }  // nothing shorter exists
-        }
-    }
-    while (best.have && (int)best.prog.size() > lb && nowSec() < deadline) {
-        Params p = randomParams(rng);
-        vector<Instr> prog;
-        size_t before = best.prog.size();
-        double rs = nowSec();
-        if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) consider(prog, "R " + tagOf(p));
-        creditArm(armOf(p), (double)before - (double)best.prog.size(), nowSec() - rs);
-        best.runs++;
-    }
-    if (best.have && (int)best.prog.size() <= lb) best.optimal = true;
-    return best;
-}
 
 // ------------------------------------------------------------------ value-graph local search (polish)
 // Move: pick a value v, remove its private cone S (v plus ancestors used only inside S and not needed as a
@@ -1114,6 +981,158 @@ static vector<Instr> polishProgram(const Puzzle &P, const vector<Instr> &prog0, 
     return best;
 }
 
+// ------------------------------------------------------------------ ablation switches + strategy bandit
+struct Overrides {
+    bool noDeep = false, noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
+    int modeMask = 7;  // bit m set => ordering mode m allowed
+    int beam = 0, termK = -1, deepK = -1; float w = -1;  // diagnostics: force search params
+    int poolCap = 0;
+} OV;
+
+static bool applyOv(Params &p) {  // returns false if the params' mode is disabled
+    if (OV.noL2) p.L2 = false;
+    if (OV.noAdd) p.additive = false;
+    if (OV.noRootWide) p.rootWide = false;
+    if (OV.noGcd) p.gcd = false;
+    if (OV.noDeep) p.deep = false;
+    if (OV.beam > 0) p.beam = OV.beam;
+    if (OV.poolCap > 0) p.poolCap = OV.poolCap;
+    if (OV.termK >= 0) p.termK = OV.termK;
+    if (OV.deepK >= 0) p.deepK = OV.deepK;
+    if (OV.w >= 0) p.w = OV.w;
+    return (OV.modeMask >> p.mode) & 1;
+}
+
+// Arms = (ordering mode, gcd seeding, L2 table). Credit = instructions saved per second of run time.
+static const int NARM = 12;
+static mutex banditMu;
+static double armGain[NARM], armTries[NARM];  // armTries holds seconds spent
+static int armOf(const Params &p) { return p.mode * 4 + (p.gcd ? 2 : 0) + (p.L2 ? 1 : 0); }
+static bool armAllowed(int a) {
+    return ((OV.modeMask >> (a / 4)) & 1) && !(OV.noGcd && (a & 2)) && !(OV.noL2 && (a & 1));
+}
+static int pickArm(mt19937_64 &rng) {
+    double w[NARM], tot = 0;
+    {
+        lock_guard<mutex> lg(banditMu);
+        for (int a = 0; a < NARM; a++) w[a] = armAllowed(a) ? (armGain[a] + 0.5) / (armTries[a] + 5.0) : 0.0;  // saved per second
+    }
+    int nAllowed = 0;
+    for (int a = 0; a < NARM; a++) nAllowed += armAllowed(a);
+    for (int a = 0; a < NARM; a++) tot += w[a];
+    uniform_real_distribution<double> U(0, 1);
+    if (OV.noBandit || U(rng) < 0.15 || tot <= 0) {  // exploration / uniform
+        int k = rng() % nAllowed;
+        for (int a = 0; a < NARM; a++) if (armAllowed(a) && k-- == 0) return a;
+    }
+    double x = U(rng) * tot;
+    for (int a = 0; a < NARM; a++) { x -= w[a]; if (x <= 0 && w[a] > 0) return a; }
+    for (int a = NARM - 1; a >= 0; a--) if (armAllowed(a)) return a;
+    return 4;
+}
+static void creditArm(int a, double gain, double secs) { lock_guard<mutex> lg(banditMu); armGain[a] += gain; armTries[a] += secs; }
+
+// ------------------------------------------------------------------ portfolio per puzzle
+static Params randomParams(mt19937_64 &rng) {
+    uniform_real_distribution<double> U(0, 1);
+    Params p;
+    int arm = pickArm(rng);
+    p.mode = arm / 4;
+    p.gcd = (arm >> 1) & 1;
+    p.gcdDrop = U(rng) < 0.5 ? 0.0 : 0.3 * U(rng);
+    static const int beams[] = {8, 16, 24, 32, 48, 64, 96};
+    p.beam = beams[rng() % 7];
+    p.termK = 2 + rng() % 10;
+    p.w = 0.08f + 0.27f * (float)U(rng);
+    p.L2 = arm & 1;
+    p.rootWide = U(rng) < 0.6;
+    p.additive = U(rng) < 0.6;
+    p.addK = 1 + rng() % 5;
+    p.deep = U(rng) < 0.8;
+    p.deepK = 1 + rng() % 4;
+    static const u64 sk[] = {8, 64, 1024, 100000};
+    p.smallKeep = sk[rng() % 4];
+    static const int caps[] = {64, 72, 88, 88, 104, 120};
+    p.poolCap = OV.poolCap > 0 ? OV.poolCap : caps[rng() % 6];
+    applyOv(p);
+    return p;
+}
+
+struct Result { vector<Instr> prog; bool have = false; int runs = 0; bool optimal = false; string tag = "init"; };
+
+static string tagOf(const Params &p) {
+    char b[160];
+    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d dp%d/%d sk%llu cap%d%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
+             (int)p.rootWide, (int)p.additive, p.addK, (int)p.deep, p.deepK, (unsigned long long)p.smallKeep, p.poolCap, p.fallbackOnly ? " FB" : "");
+    return b;
+}
+
+static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u64 seed, Tables &T, Planner &PL) {
+    double t0 = nowSec(), deadline = t0 + budget;
+    mt19937_64 rng(seed ^ mix64(std::hash<string>()(P.id)));
+    Result best = init;
+    int lb = 0;
+    {
+        vector<char> c(P.tg.size(), 0);
+        for (u64 v : P.start) { int t = tIndex(P.tg, v); if (t >= 0) c[t] = 1; }
+        for (char x : c) lb += !x;
+    }
+    auto consider = [&](vector<Instr> &prog, const string &tag) {
+        if (!simulate(P, prog)) return;
+        if (!best.have || prog.size() < best.prog.size()) { best.prog = prog; best.have = true; best.tag = tag; }
+    };
+    if (best.have && (int)best.prog.size() <= lb) { best.optimal = true; return best; }
+
+    vector<Params> fixed;
+    { Params p; p.mode = 1; fixed.push_back(p); }
+    { Params p; p.mode = 0; fixed.push_back(p); }
+    { Params p; p.mode = 1; p.gcd = true; fixed.push_back(p); }
+    { Params p; p.mode = 1; p.beam = 64; p.termK = 10; p.w = 0.14f; fixed.push_back(p); }
+    { Params p; p.mode = 0; p.gcd = true; p.L2 = false; fixed.push_back(p); }
+    { Params p; p.mode = 1; p.poolCap = 48; fixed.push_back(p); }  // always fits the registers
+
+    for (size_t k = 0; k < fixed.size() || !best.have; k++) {
+        if (best.have && nowSec() > deadline) break;
+        vector<Instr> prog;
+        Params p = k < fixed.size() ? fixed[k] : Params();
+        if (k >= fixed.size()) p.fallbackOnly = true;
+        else if (!applyOv(p)) continue;
+        if (runStrategy(P, p, T, PL, rng, prog, deadline, !best.have)) {
+            if (FRESH_POLISH > 0 && !p.fallbackOnly && (!best.have || prog.size() <= best.prog.size() * 1.15)) {
+                int mv, im;
+                prog = polishProgram(P, prog, min(FRESH_POLISH, max(0.0, deadline - nowSec())), rng, mv, im);
+            }
+            consider(prog, "F" + to_string(k) + " " + tagOf(p) + (FRESH_POLISH > 0 ? " +pol" : ""));
+        }
+        best.runs++;
+        if (k > fixed.size() + 2) break;
+        if (k == 0 && !OV.noExact && P.limit <= (1u << 20) && best.have && (int)best.prog.size() > lb) {
+            Exact ex(P, t0 + max(1.0, budget * 0.6));
+            vector<Instr> eo;
+            int r = ex.solve((int)best.prog.size() - 1, eo);
+            if (r == 1) { consider(eo, "exact"); best.optimal = true; return best; }
+            if (r == 0) { best.optimal = true; return best; }  // nothing shorter exists
+        }
+    }
+    while (best.have && (int)best.prog.size() > lb && nowSec() < deadline) {
+        Params p = randomParams(rng);
+        vector<Instr> prog;
+        size_t before = best.prog.size();
+        double rs = nowSec();
+        if (runStrategy(P, p, T, PL, rng, prog, deadline, false)) {
+            if (FRESH_POLISH > 0 && prog.size() <= best.prog.size() * 1.15) {
+                int mv, im;
+                prog = polishProgram(P, prog, min(FRESH_POLISH, max(0.0, deadline - nowSec())), rng, mv, im);
+            }
+            consider(prog, "R " + tagOf(p) + (FRESH_POLISH > 0 ? " +pol" : ""));
+        }
+        creditArm(armOf(p), (double)before - (double)best.prog.size(), nowSec() - rs);
+        best.runs++;
+    }
+    if (best.have && (int)best.prog.size() <= lb) best.optimal = true;
+    return best;
+}
+
 // ------------------------------------------------------------------ I/O
 static vector<Puzzle> readPuzzles(const string &fn) {
     ifstream f(fn);
@@ -1174,7 +1193,9 @@ int main(int argc, char **argv) {
         else if (a == "--only") only = nx();
         else if (a == "--debug") DEBUG = true;
         else if (a == "--polish") polishMode = true;
+        else if (a == "--fresh-polish") FRESH_POLISH = stod(nx());
         else if (a == "--beam") OV.beam = stoi(nx());
+        else if (a == "--poolcap") OV.poolCap = stoi(nx());
         else if (a == "--termk") OV.termK = stoi(nx());
         else if (a == "--deepk") OV.deepK = stoi(nx());
         else if (a == "--w") OV.w = stof(nx());
