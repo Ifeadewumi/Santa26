@@ -15,3 +15,18 @@ Record of every step in this session, in order. Scores are total instructions (l
 
 ## 2. Solver v1 smoke test
 - `solver.cpp` v1, compiled with `g++ -O2 -march=native`. On scored_0001 (32 targets) with a 20 s budget on 1 thread it found 268 instructions in 15 portfolio runs. The Python verifier accepts it.
+
+## 3. Practice-set diagnostic, solver v1 (about 6 s per puzzle, 4 threads, 300 s total)
+Command: `solver --puzzles practice.txt --out prac_v1.txt --total 300 --threads 4`. All 200 programs are valid.
+
+| family | n | instructions | lower bound | ratio |
+|---|---|---|---|---|
+| independent | 45 | 12,071 | 1,307 | 9.24 |
+| mixed | 48 | 10,187 | 1,356 | 7.51 |
+| multiplicative | 40 | 4,727 | 1,161 | 4.07 |
+| shared | 51 | 7,779 | 1,428 | 5.45 |
+| tiny | 16 | 50 | 36 | 1.39 |
+| **total** | 200 | **34,814** | 5,288 | **6.58** |
+
+Winning strategy per puzzle: cheapest-first ordering (`m1`) won 184 of 200, of which 47 were with gcd seeding (`m1g`). Ascending order won 9 and random order 7.
+Takeaways: "independent" and "mixed" (random large targets) dominate the remaining cost. Cheapest-first should get most of the time budget.
