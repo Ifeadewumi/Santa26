@@ -52,3 +52,9 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Bandit arms are now (ordering mode × gcd seeding × L2 table), 12 in total. Credit is instructions saved per **second** of run time, and the prior is `(saved+0.5)/(seconds+5)`, keeping 15% uniform exploration.
 - Dev subset `sub48`: the first 12 practice puzzles of each non-tiny family (tiny is already near optimal). Budget 360 s on 4 threads, about 30 s per puzzle, close to the planned scored-run budget.
 - Configs: v3 base (seed 2026), v3 `--ablate deep`, v3 `--ablate L2`, and v3 base with seed 7 (noise estimate).
+
+## 8. Representative-budget results, diagnostics and leaderboard
+- See `docs/EXPERIMENTS.md` E10–E13: all configs fall within ±25 noise. Deep MITM and L2 bring no gain, and 5× more time gives only 4.5%.
+- Added `--debug` (per-target trace) and `--beam/--w/--termk/--deepk` overrides. A wider beam does not help, so the move set is the limit, not the search.
+- Leaderboard top is 125,289. The practice ratio (6.3) projects to about 170k on the scored set.
+- Started **scored run 1**: v3, 3,600 s, 4 threads, warm start from `sample_submission`, bandit statistics saved to `bandit.stats`.

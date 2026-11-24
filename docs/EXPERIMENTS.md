@@ -18,3 +18,19 @@ Unless noted, the development set is `practice_puzzles.csv` (200 puzzles, lower 
 **Reading of E2–E9 (6 s per puzzle):** at this short budget, run count matters more than per-run quality, so dropping the expensive table level (L2) or the additive moves helps. Gcd is the only component whose removal clearly hurts. Run-to-run noise is about ±100–300 (E1 vs E2 differ by 74, and E8 changed nothing that can affect tiny yet moved by 306). Two design conclusions:
 1. The bandit's credit must be **per second**, not per try, because runs differ about 10× in cost. L2 on/off should be an arm.
 2. Ablations must use a per-puzzle budget close to the scored run's (about 30–45 s), otherwise they select for speed only.
+
+## Representative budget (sub48: 12 puzzles × 4 non-tiny families, lb 1,368; 360 s on 4 threads, about 30 s per puzzle)
+| id | solver | config | total | ratio | Δ vs E10 | notes |
+|---|---|---|---|---|---|---|
+| E0' | v1 | 6 s per puzzle (from E1, same 48 puzzles) | 9,015 | 6.59 | +392 | 5× less time is only 4.5% worse |
+| E10 | v3 | base, seed 2026 | 8,623 | 6.30 | ref | bandit: m1 arms collect nearly all savings |
+| E11 | v3 | `--ablate deep` | 8,605 | 6.29 | −18 | deep MITM: no measurable gain |
+| E12 | v3 | `--ablate L2` | 8,651 | 6.32 | +28 | |
+| E13 | v3 | base, seed 7 | 8,598 | 6.28 | −25 | noise ≈ ±25 at this size |
+
+Single-puzzle diagnostics (practice_0003, independent, start {2,16}):
+- Trace: the first target costs 20 (tiny pool). With a full pool, 40-bit targets cost about 7 and 57–60-bit targets about 10–11.
+- Beam sweep (beam 24/128/512 × w 0.12/0.18/0.25): 270–281 with no trend, so a wider search does not help.
+- Exhaustive depth-6 enumeration from {2,16} (123,774 values): the first target is not `x±y` of two such values, so the bootstrap is inherently expensive for tiny start sets.
+
+Leaderboard check (2026-11-24, `kaggle competitions leaderboard`): **top 125,289**, about 4.66 per target overall.

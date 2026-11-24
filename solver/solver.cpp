@@ -22,6 +22,7 @@ typedef unsigned long long u64;
 typedef __uint128_t u128;
 
 static const int INF = 1000000;
+static bool DEBUG = false;
 
 static inline double nowSec() {
     return chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
@@ -578,7 +579,9 @@ static bool runStrategy(const Puzzle &P, const Params &p, Tables &T, Planner &PL
         }
         fresh = false;
         if (!ok) st = fallbackSteps(B, t);
-        if (B.runSteps(st)) return true;
+        size_t n0 = B.nodes.size();
+        if (DEBUG) fprintf(stderr, "  target %llu bits=%d est=%d steps=%zu ok=%d pool=%zu", (unsigned long long)t, 64 - __builtin_clzll(t), ok ? est : -1, st.size(), (int)ok, B.pool.size());
+        if (B.runSteps(st)) { if (DEBUG) fprintf(stderr, " added=%zu\n", B.nodes.size() - n0); return true; }
         st = fallbackSteps(B, t);
         return B.runSteps(st);
     };
@@ -707,6 +710,7 @@ struct Exact {
 struct Overrides {
     bool noDeep = false, noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
     int modeMask = 7;  // bit m set => ordering mode m allowed
+    int beam = 0, termK = -1, deepK = -1; float w = -1;  // diagnostics: force search params
 } OV;
 
 static bool applyOv(Params &p) {  // returns false if the params' mode is disabled
@@ -715,6 +719,10 @@ static bool applyOv(Params &p) {  // returns false if the params' mode is disabl
     if (OV.noRootWide) p.rootWide = false;
     if (OV.noGcd) p.gcd = false;
     if (OV.noDeep) p.deep = false;
+    if (OV.beam > 0) p.beam = OV.beam;
+    if (OV.termK >= 0) p.termK = OV.termK;
+    if (OV.deepK >= 0) p.deepK = OV.deepK;
+    if (OV.w >= 0) p.w = OV.w;
     return (OV.modeMask >> p.mode) & 1;
 }
 
@@ -890,6 +898,11 @@ int main(int argc, char **argv) {
         else if (a == "--threads") threads = stoi(nx());
         else if (a == "--seed") seed = stoull(nx());
         else if (a == "--only") only = nx();
+        else if (a == "--debug") DEBUG = true;
+        else if (a == "--beam") OV.beam = stoi(nx());
+        else if (a == "--termk") OV.termK = stoi(nx());
+        else if (a == "--deepk") OV.deepK = stoi(nx());
+        else if (a == "--w") OV.w = stof(nx());
         else if (a == "--modes") { OV.modeMask = 0; for (char c : nx()) OV.modeMask |= 1 << (c - '0'); }
         else if (a == "--ablate") {  // comma list of: L2,add,rw,gcd,exact,bandit
             string v = nx() + ",";
