@@ -38,3 +38,9 @@ Takeaways: "independent" and "mixed" (random large targets) dominate the remaini
   - A strategy bandit over (ordering mode × gcd seeding). The credit is instructions saved by a randomized run, per try. Arms are chosen in proportion to `(gain+0.5)/(tries+5)` with 15% uniform exploration. Statistics can persist via `--stats FILE`.
 - `solver/ablate.sh` runs 8 configs on the practice set with the same budget and seed (300 s each): base, no_bandit, no_L2, no_additive, no_rootwide, no_gcd, no_exact, only_cheapest.
 - Created `docs/EXPERIMENTS.md` (the experiment table).
+
+## 5. Solver v3: whole-table meet-in-the-middle leaf check (`deep`)
+- Hypothesis: most of the cost in independent and mixed comes from closing out large leftovers. The v1 leaf check pairs about 3.5k cost≤1 values with the table. A two-pointer search for `m = x + y` / `m = x − y` over the whole radix-sorted table (about 1M × 1M pairs) extends the closable range by about 2.5 orders of magnitude for about 3–5 ms per call.
+- Implemented behind `Params.deep`/`deepK` (root plus the top `deepK` beam states per depth). Ablate with `--ablate deep`. Off for the cheap-ordering estimates.
+- The table's sorted copy moved from `std::sort` of pairs to a 4-pass 16-bit LSD radix sort (also used by the additive moves).
+- Built as `solver_v3`. Evaluation is pending until the ablation suite (run on the v2 binary) finishes.

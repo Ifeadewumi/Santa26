@@ -127,7 +127,8 @@ struct Tables {
     size_t maxE = 0;
     vector<u64> keys; vector<int> vals; u64 mask = 0;
     vector<u64> filt; int fshift = 0;
-    vector<pair<u64, int>> srt; bool hasSrt = false;
+    vector<u64> sv; vector<int> si; bool hasSrt = false;  // table values sorted (radix)
+    vector<u64> tv; vector<int> ti;
 
     void reset(size_t est) {
         size_t cap = 1 << 12;
@@ -206,11 +207,20 @@ struct Tables {
             }
         }
     }
-    void buildSorted() {
+    void buildSorted() {  // LSD radix sort, 4 x 16-bit passes
         if (hasSrt) return;
-        srt.resize(E.size());
-        for (size_t i = 0; i < E.size(); i++) srt[i] = {E[i].v, (int)i};
-        sort(srt.begin(), srt.end());
+        size_t n = E.size();
+        sv.resize(n); si.resize(n); tv.resize(n); ti.resize(n);
+        for (size_t i = 0; i < n; i++) { sv[i] = E[i].v; si[i] = (int)i; }
+        static thread_local vector<uint32_t> cnt(65537);
+        for (int pass = 0; pass < 4; pass++) {
+            int sh = pass * 16;
+            fill(cnt.begin(), cnt.end(), 0);
+            for (size_t i = 0; i < n; i++) cnt[((sv[i] >> sh) & 0xFFFF) + 1]++;
+            for (int d = 0; d < 65536; d++) cnt[d + 1] += cnt[d];
+            for (size_t i = 0; i < n; i++) { uint32_t pos = cnt[(sv[i] >> sh) & 0xFFFF]++; tv[pos] = sv[i]; ti[pos] = si[i]; }
+            sv.swap(tv); si.swap(ti);
+        }
         hasSrt = true;
     }
 };
@@ -226,6 +236,8 @@ struct Params {
     int l2cap = 1500000;
     bool rootWide = true;  // divisors from the whole table at the root
     bool additive = true;  // m = x +- q moves
+    bool deep = true;      // whole-table meet-in-the-middle leaf check
+    int deepK = 2;
     int addK = 3;
     u64 smallKeep = 64;    // pool values <= this are evicted last
     bool fallbackOnly = false;
@@ -266,6 +278,37 @@ struct Planner {
             if (m % xv == 0) tryY(m / xv, '*', true);
             if (xv > m && xv % m == 0) tryY(xv / m, '/', true);
             if ((u128)m * xv <= lim) tryY(m * xv, '/', false);
+        }
+        return bc;
+    }
+
+    // Meet-in-the-middle over the whole table: m = x + y or m = x - y, any x, y in E (two pointers on sorted values).
+    int deepTerm(u64 m, int bound, char &op, int &ex, int &ey) {
+        T.buildSorted();
+        const auto &SV = T.sv; const auto &SI = T.si; const auto &E = T.E;
+        int bc = bound;
+        long n = SV.size();
+        if (bc <= 2 || n == 0) return bc;
+        long i = 0, j = (long)(lower_bound(SV.begin(), SV.end(), m) - SV.begin()) - 1;
+        while (i <= j) {  // sum
+            u64 s = SV[i] + SV[j];
+            if (s == m) {
+                int c = E[SI[i]].c + E[SI[j]].c + 1;
+                if (c < bc) { bc = c; op = '+'; ex = SI[j]; ey = SI[i]; if (bc <= 2) return bc; }
+                i++; j--;
+            } else if (s < m) i++;
+            else j--;
+        }
+        long k = 0;
+        for (long y = 0; y < n; y++) {  // difference x - y = m
+            u64 x = SV[y] + m;
+            if (x > T.lim) break;
+            while (k < n && SV[k] < x) k++;
+            if (k >= n) break;
+            if (SV[k] == x) {
+                int c = E[SI[k]].c + E[SI[y]].c + 1;
+                if (c < bc) { bc = c; op = '-'; ex = SI[k]; ey = SI[y]; if (bc <= 2) return bc; }
+            }
         }
         return bc;
     }
@@ -325,6 +368,10 @@ struct Planner {
             char op = '+'; int ex = -1, ey = -1;
             int c = term(n, INF, op, ex, ey);
             if (c < INF) { best = c; bNode = 0; bKind = 1; bOp = op; bX = ex; bY = ey; }
+            if (p.deep) {
+                c = deepTerm(n, best, op, ex, ey);
+                if (c < best) { best = c; bNode = 0; bKind = 1; bOp = op; bX = ex; bY = ey; }
+            }
         }
         vector<int> beam{0}, cand;
         vector<pair<float, int>> sc;
@@ -354,19 +401,16 @@ struct Planner {
                 }
                 if (p.additive) {
                     T.buildSorted();
-                    const auto &S = T.srt;
-                    size_t pos = lower_bound(S.begin(), S.end(), make_pair(m, -1)) - S.begin();
+                    const auto &SV = T.sv; const auto &SI = T.si;
+                    size_t pos = lower_bound(SV.begin(), SV.end(), m) - SV.begin();
                     for (int k = 1; k <= p.addK && (long)pos - k >= 0; k++) {
-                        const auto &pr = S[pos - k];
-                        if (pr.first >= m) continue;
-                        child(s, m - pr.first, acc + E[pr.second].c + 1, 4, pr.second, -1, cand);
+                        if (SV[pos - k] >= m) continue;
+                        child(s, m - SV[pos - k], acc + E[SI[pos - k]].c + 1, 4, SI[pos - k], -1, cand);
                     }
                     size_t st = pos;
-                    while (st < S.size() && S[st].first == m) st++;
-                    for (int k = 0; k < p.addK && st + k < S.size(); k++) {
-                        const auto &pr = S[st + k];
-                        child(s, pr.first - m, acc + E[pr.second].c + 1, 5, pr.second, -1, cand);
-                    }
+                    while (st < SV.size() && SV[st] == m) st++;
+                    for (int k = 0; k < p.addK && st + k < SV.size(); k++)
+                        child(s, SV[st + k] - m, acc + E[SI[st + k]].c + 1, 5, SI[st + k], -1, cand);
                 }
             }
             sc.clear();
@@ -386,7 +430,11 @@ struct Planner {
                     int bound = best - nodes[c].acc;
                     if (bound <= 2) continue;
                     int tc = term(nodes[c].m, bound, op, ex, ey);
-                    if (tc < bound) { best = nodes[c].acc + tc; bNode = c; bKind = 1; bOp = op; bX = ex; bY = ey; }
+                    if (tc < bound) { best = nodes[c].acc + tc; bNode = c; bKind = 1; bOp = op; bX = ex; bY = ey; bound = tc; }
+                    if (p.deep && i < p.deepK && bound > 2) {
+                        tc = deepTerm(nodes[c].m, bound, op, ex, ey);
+                        if (tc < bound) { best = nodes[c].acc + tc; bNode = c; bKind = 1; bOp = op; bX = ex; bY = ey; }
+                    }
                 }
             }
         }
@@ -519,7 +567,7 @@ static vector<u64> gcdCands(const vector<u64> &tg, const vector<char> &cov, mt19
 static bool runStrategy(const Puzzle &P, const Params &p, Tables &T, Planner &PL, mt19937_64 &rng,
                         vector<Instr> &out, double deadline, bool mustFinish) {
     Builder B(P, p.smallKeep);
-    Params pe = p; pe.rootWide = false; pe.additive = false; pe.maxDepth = min(p.maxDepth, 24);
+    Params pe = p; pe.rootWide = false; pe.additive = false; pe.deep = false; pe.maxDepth = min(p.maxDepth, 24);
     bool fresh = false;  // tables match the current pool
     auto doTarget = [&](u64 t) -> bool {
         vector<Step> st; int est;
@@ -657,7 +705,7 @@ struct Exact {
 
 // ------------------------------------------------------------------ ablation switches + strategy bandit
 struct Overrides {
-    bool noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
+    bool noDeep = false, noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
     int modeMask = 7;  // bit m set => ordering mode m allowed
 } OV;
 
@@ -666,6 +714,7 @@ static bool applyOv(Params &p) {  // returns false if the params' mode is disabl
     if (OV.noAdd) p.additive = false;
     if (OV.noRootWide) p.rootWide = false;
     if (OV.noGcd) p.gcd = false;
+    if (OV.noDeep) p.deep = false;
     return (OV.modeMask >> p.mode) & 1;
 }
 
@@ -712,6 +761,8 @@ static Params randomParams(mt19937_64 &rng) {
     p.rootWide = U(rng) < 0.6;
     p.additive = U(rng) < 0.6;
     p.addK = 1 + rng() % 5;
+    p.deep = U(rng) < 0.8;
+    p.deepK = 1 + rng() % 4;
     static const u64 sk[] = {8, 64, 1024, 100000};
     p.smallKeep = sk[rng() % 4];
     applyOv(p);
@@ -722,8 +773,8 @@ struct Result { vector<Instr> prog; bool have = false; int runs = 0; bool optima
 
 static string tagOf(const Params &p) {
     char b[160];
-    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d sk%llu%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
-             (int)p.rootWide, (int)p.additive, p.addK, (unsigned long long)p.smallKeep, p.fallbackOnly ? " FB" : "");
+    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d dp%d/%d sk%llu%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
+             (int)p.rootWide, (int)p.additive, p.addK, (int)p.deep, p.deepK, (unsigned long long)p.smallKeep, p.fallbackOnly ? " FB" : "");
     return b;
 }
 
@@ -841,7 +892,7 @@ int main(int argc, char **argv) {
             string v = nx() + ",";
             OV.noL2 = v.find("L2,") != string::npos; OV.noAdd = v.find("add,") != string::npos;
             OV.noRootWide = v.find("rw,") != string::npos; OV.noGcd = v.find("gcd,") != string::npos;
-            OV.noExact = v.find("exact,") != string::npos; OV.noBandit = v.find("bandit,") != string::npos;
+            OV.noExact = v.find("exact,") != string::npos; OV.noDeep = v.find("deep,") != string::npos; OV.noBandit = v.find("bandit,") != string::npos;
         }
         else if (a == "--stats") statsFile = nx();
     }
