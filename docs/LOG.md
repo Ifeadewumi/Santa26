@@ -159,3 +159,6 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - `kaggle_shards.py` gained `--engine elfopt --engine-src … [--variants file]`. Each shard runs one engine process per CPU over its frontier programs plus extra start variants, with a per-block time that fills the budget, verifies every result and writes `out.txt`.
 - Variant starts (`variants.txt`): per puzzle up to 2 distinct programs within +1 of the frontier, ours first, then other public lineages.
 - Plan: after Kaggle wave 2 finishes, run a frontier LNS wave (5 shards × 3 h) and measure yield per hour to project the top-50 effort.
+- User: submit every time the merged score beats the previous high (100 submissions/day).
+- Added `solver/merge_public.py`, which verifies and merges every CSV/txt under the given paths into a best file, and `solver/submit_best.sh`, which verifies end to end, writes the CSV and submits.
+- Re-pulled the 15 freshest public datasets plus 3 notebook outputs. alexchilton (−15) and goodpjw2008 (−1) moved the frontier: **128,311 → 128,295, submitted, public 128,295**.
