@@ -143,3 +143,10 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 
   The driver only admits bank programs within +1/+3 of the best, so our longer lineage cannot be a donor until it gets close to frontier quality.
 - **Blocked:** running the compiled public engine (third-party code from a downloaded dataset) was denied by the session's permission classifier. Not worked around; waiting for the user's decision.
+
+## 15. Wave-1 results, own-lineage submission, wave 2
+- Local run 2 (v7, shards 5–9, 7,191 s): 500/500 valid, saved 8,162 instructions on its puzzles. Own lineage 166,079 → 157,917.
+- Kaggle wave 1 (`elf-v5-00..04`, v5 + fresh polish, 3 h × 5 sessions): every returned program re-verified, 489 puzzles improved. Own lineage **157,917 → 149,008**.
+- **Submitted** `submission_own.csv` (own lineage only, user's threshold was <160,079): **public 149,008**. The team's best remains the frontier merge at 128,311.
+- Wave 2: Kaggle `elf-v9-00..04` (v9 = seeds + pool cap + construct/polish + beam rebuild, shards 0–4, 3 h) and local run 3 (v9, shards 5–9, 7,000 s), both warm-started from the 149,008 own lineage.
+- The poller for wave 1 hit the background-task time limit and was stopped; status was checked directly instead.
