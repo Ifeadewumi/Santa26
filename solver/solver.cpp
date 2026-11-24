@@ -243,6 +243,9 @@ struct Params {
     int addK = 3;
     u64 smallKeep = 64;    // pool values <= this are evicted last
     int poolCap = 88;      // max live pool values (may exceed R; register allocation decides at the end)
+    bool hub = false;      // build recovered hidden hubs first
+    int hubShift = 18;     // residual threshold: |q*t_j - p*t_i| < t_j >> hubShift
+    int nSeeds = 0;        // build the n most significant sieved seeds first
     bool fallbackOnly = false;
 };
 
@@ -566,6 +569,109 @@ static vector<u64> gcdCands(const vector<u64> &tg, const vector<char> &cov, mt19
     return out;
 }
 
+// Hidden-seed recovery by sieving: targets are often seed_i*seed_j (*k) +- small offset. A candidate a is
+// scored by how many targets t (with t/a >= 2^10) satisfy |t - round(t/a)*a| <= C, against the Poisson rate
+// (2C+1)/a per target. Candidates that are small-ratio multiples of a better one (a1*l == a2*k, k,l <= 16)
+// are dropped. Result: seeds sorted by significance (most significant first). Cached per puzzle.
+static mutex seedMu;
+static unordered_map<string, vector<u64>> seedCache;
+static vector<u64> seedCands(const Puzzle &P) {
+    {
+        lock_guard<mutex> lg(seedMu);
+        auto it = seedCache.find(P.id);
+        if (it != seedCache.end()) return it->second;
+    }
+    const u64 C = 1024;
+    vector<u64> t;
+    for (u64 v : P.tg) if (v >= (1ULL << 30)) t.push_back(v);
+    vector<pair<double, u64>> res;
+    if (t.size() >= 4) {
+        u64 maxT = t.back();
+        u64 hi = min<u64>(1ULL << 24, maxT >> 10);
+        for (u64 a = 1 << 12; a <= hi; a++) {
+            int h = 0; double lam = 0;
+            for (u64 v : t) {
+                if (v / a < 1024) continue;
+                lam += (2.0 * C + 1) / a;
+                u64 r = v % a;
+                if (r <= C || a - r <= C) h++;
+            }
+            if (h < 3) continue;
+            double term = exp(-lam), cum = 0;
+            for (int k = 0; k < h; k++) { cum += term; term *= lam / (k + 1); }
+            double lp = log10(max(1e-300, 1 - cum));
+            if (lp <= -5) res.push_back({lp, a});
+        }
+    }
+    sort(res.begin(), res.end());
+    vector<u64> out;
+    for (auto &pr : res) {
+        u64 a = pr.second; bool dup = false;
+        for (u64 b : out)
+            for (u64 k = 1; k <= 16 && !dup; k++)
+                for (u64 l = 1; l <= 16; l++) if (a * l == b * k) { dup = true; break; }
+        if (!dup) out.push_back(a);
+        if (out.size() >= 16) break;
+    }
+    lock_guard<mutex> lg(seedMu);
+    seedCache[P.id] = out;
+    return out;
+}
+
+// Hidden-hub recovery: targets of the form k*H + c (small k, small c). For each pair of large targets find
+// the best continued-fraction convergent p/q (q <= 64) of t_j/t_i; a residual |q*t_j - p*t_i| far below chance
+// suggests a shared hub H ~ t_i / q. Hubs explaining >= 2 targets are returned (ascending), greedily.
+static vector<u64> hubCands(const vector<u64> &tg, const vector<char> &cov, u64 lim, int maxK, int shift) {
+    vector<u64> rem;
+    for (size_t i = 0; i < tg.size(); i++) if (!cov[i] && tg[i] >= (1ULL << 24)) rem.push_back(tg[i]);
+    vector<u64> cand;
+    for (size_t i = 0; i < rem.size(); i++)
+        for (size_t j = 0; j < rem.size(); j++) {
+            if (i == j) continue;
+            u64 a = rem[i], b = rem[j];  // approximate b/a by p/q
+            // continued fraction of b/a
+            u64 x = b, y = a; u128 p0 = 0, q0 = 1, p1 = 1, q1 = 0;
+            while (y) {
+                u64 c = x / y, r = x % y;
+                u128 p2 = c * p1 + p0, q2 = c * q1 + q0;
+                if (q2 > (u128)maxK || p2 > (u128)maxK * 64) break;
+                p0 = p1; q0 = q1; p1 = p2; q1 = q2;
+                x = y; y = r;
+            }
+            if (q1 == 0 || p1 == 0) continue;
+            if (q1 == 1 && p1 == 1) continue;  // near-duplicates: handled by additive moves
+            u128 lhs = q1 * (u128)b, rhs = p1 * (u128)a;
+            u128 res = lhs > rhs ? lhs - rhs : rhs - lhs;
+            if (res >= (u128)(b >> shift)) continue;
+            u64 H = a / (u64)q1;
+            if (H >= 16 && H <= lim) cand.push_back(H);
+        }
+    sort(cand.begin(), cand.end());
+    cand.erase(unique(cand.begin(), cand.end()), cand.end());
+    vector<char> expl(rem.size(), 0);
+    vector<u64> hubs;
+    auto explains = [&](u64 H, u64 t) {
+        u64 k = (t + H / 2) / H;
+        if (k < 1 || k > (u64)maxK * 64) return false;
+        u128 kh = (u128)k * H;
+        u128 off = kh > t ? kh - t : t - kh;
+        return off <= (u128)max<u64>(1 << 17, H >> 20);
+    };
+    while (true) {
+        int bc = 1; u64 bh = 0;
+        for (u64 H : cand) {
+            int c = 0;
+            for (size_t i = 0; i < rem.size(); i++) if (!expl[i] && explains(H, rem[i])) c++;
+            if (c > bc) { bc = c; bh = H; }
+        }
+        if (!bh) break;
+        hubs.push_back(bh);
+        for (size_t i = 0; i < rem.size(); i++) if (explains(bh, rem[i])) expl[i] = 1;
+    }
+    sort(hubs.begin(), hubs.end());
+    return hubs;
+}
+
 // ------------------------------------------------------------------ one greedy run
 static bool runStrategy(const Puzzle &P, const Params &p, Tables &T, Planner &PL, mt19937_64 &rng,
                         vector<Instr> &out, double deadline, bool mustFinish) {
@@ -587,6 +693,21 @@ static bool runStrategy(const Puzzle &P, const Params &p, Tables &T, Planner &PL
         st = fallbackSteps(B, t);
         return B.runSteps(st);
     };
+    if (p.nSeeds > 0 && !p.fallbackOnly) {
+        vector<u64> sd = seedCands(P);
+        if ((int)sd.size() > p.nSeeds) sd.resize(p.nSeeds);
+        sort(sd.begin(), sd.end());
+        for (u64 h : sd) {
+            if (!mustFinish && nowSec() > deadline) return false;
+            if (h <= P.limit && !B.has(h) && !doTarget(h)) return false;
+        }
+    }
+    if (p.hub && !p.fallbackOnly) {
+        for (u64 h : hubCands(P.tg, B.cov, P.limit, 64, p.hubShift)) {
+            if (!mustFinish && nowSec() > deadline) return false;
+            if (!B.has(h) && !doTarget(h)) return false;
+        }
+    }
     if (p.gcd && !p.fallbackOnly) {
         for (u64 g : gcdCands(P.tg, B.cov, rng, p.gcdDrop)) {
             if (!mustFinish && nowSec() > deadline) return false;
@@ -1005,10 +1126,11 @@ static vector<Instr> polishProgram(const Puzzle &P, const vector<Instr> &prog0, 
 
 // ------------------------------------------------------------------ ablation switches + strategy bandit
 struct Overrides {
-    bool noDeep = false, noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
+    bool forceHub = false, noHub = false, noDeep = false, noL2 = false, noAdd = false, noRootWide = false, noGcd = false, noExact = false, noBandit = false;
     int modeMask = 7;  // bit m set => ordering mode m allowed
     int beam = 0, termK = -1, deepK = -1; float w = -1;  // diagnostics: force search params
     int poolCap = 0;
+    int nSeeds = -1;
 } OV;
 
 static bool applyOv(Params &p) {  // returns false if the params' mode is disabled
@@ -1017,8 +1139,11 @@ static bool applyOv(Params &p) {  // returns false if the params' mode is disabl
     if (OV.noRootWide) p.rootWide = false;
     if (OV.noGcd) p.gcd = false;
     if (OV.noDeep) p.deep = false;
+    if (OV.noHub) p.hub = false;
+    if (OV.forceHub) p.hub = true;
     if (OV.beam > 0) p.beam = OV.beam;
     if (OV.poolCap > 0) p.poolCap = OV.poolCap;
+    if (OV.nSeeds >= 0) p.nSeeds = OV.nSeeds;
     if (OV.termK >= 0) p.termK = OV.termK;
     if (OV.deepK >= 0) p.deepK = OV.deepK;
     if (OV.w >= 0) p.w = OV.w;
@@ -1076,6 +1201,10 @@ static Params randomParams(mt19937_64 &rng) {
     p.smallKeep = sk[rng() % 4];
     static const int caps[] = {64, 72, 88, 88, 104, 120};
     p.poolCap = OV.poolCap > 0 ? OV.poolCap : caps[rng() % 6];
+    p.hub = U(rng) < 0.2;
+    p.nSeeds = U(rng) < 0.4 ? 0 : 1 + rng() % 8;
+    if (OV.nSeeds >= 0) p.nSeeds = OV.nSeeds;
+    p.hubShift = 14 + rng() % 9;
     applyOv(p);
     return p;
 }
@@ -1084,8 +1213,8 @@ struct Result { vector<Instr> prog; bool have = false; int runs = 0; bool optima
 
 static string tagOf(const Params &p) {
     char b[160];
-    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d dp%d/%d sk%llu cap%d%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
-             (int)p.rootWide, (int)p.additive, p.addK, (int)p.deep, p.deepK, (unsigned long long)p.smallKeep, p.poolCap, p.fallbackOnly ? " FB" : "");
+    snprintf(b, sizeof b, "m%d%s b%d k%d w%.2f L%d rw%d ad%d/%d dp%d/%d sk%llu cap%d%s%s", p.mode, p.gcd ? "g" : "", p.beam, p.termK, p.w, (int)p.L2,
+             (int)p.rootWide, (int)p.additive, p.addK, (int)p.deep, p.deepK, (unsigned long long)p.smallKeep, p.poolCap, p.hub ? " hub" : (p.nSeeds ? (" s" + to_string(p.nSeeds)).c_str() : ""), p.fallbackOnly ? " FB" : "");
     return b;
 }
 
@@ -1112,6 +1241,8 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
     { Params p; p.mode = 1; p.beam = 64; p.termK = 10; p.w = 0.14f; fixed.push_back(p); }
     { Params p; p.mode = 0; p.gcd = true; p.L2 = false; fixed.push_back(p); }
     { Params p; p.mode = 1; p.poolCap = 48; fixed.push_back(p); }  // always fits the registers
+    { Params p; p.mode = 1; p.nSeeds = 4; fixed.push_back(p); }
+    { Params p; p.mode = 1; p.nSeeds = 8; fixed.push_back(p); }
 
     for (size_t k = 0; k < fixed.size() || !best.have; k++) {
         if (best.have && nowSec() > deadline) break;
@@ -1218,6 +1349,8 @@ int main(int argc, char **argv) {
         else if (a == "--fresh-polish") FRESH_POLISH = stod(nx());
         else if (a == "--beam") OV.beam = stoi(nx());
         else if (a == "--poolcap") OV.poolCap = stoi(nx());
+        else if (a == "--hub") OV.forceHub = true;
+        else if (a == "--seeds") OV.nSeeds = stoi(nx());
         else if (a == "--termk") OV.termK = stoi(nx());
         else if (a == "--deepk") OV.deepK = stoi(nx());
         else if (a == "--w") OV.w = stof(nx());
@@ -1226,7 +1359,7 @@ int main(int argc, char **argv) {
             string v = nx() + ",";
             OV.noL2 = v.find("L2,") != string::npos; OV.noAdd = v.find("add,") != string::npos;
             OV.noRootWide = v.find("rw,") != string::npos; OV.noGcd = v.find("gcd,") != string::npos;
-            OV.noExact = v.find("exact,") != string::npos; OV.noDeep = v.find("deep,") != string::npos; OV.noBandit = v.find("bandit,") != string::npos;
+            OV.noExact = v.find("exact,") != string::npos; OV.noDeep = v.find("deep,") != string::npos; OV.noHub = v.find("hub,") != string::npos; OV.noBandit = v.find("bandit,") != string::npos;
         }
         else if (a == "--stats") statsFile = nx();
     }

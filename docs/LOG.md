@@ -98,3 +98,16 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
   - `collect` downloads outputs, verifies every program with `elf.check_program` and does a per-puzzle best merge.
 - Own-lineage warm start `ours.txt` = sample ∪ run-1 checkpoint (878,214 at push time, because run 1 is only partly done).
 - Pushed `elf-v5-00..04` (v5 solver, `--fresh-polish 3`, 3 h each, shards i::10). **Kaggle limits batch CPU sessions to 5 at a time**, so shards 5–9 are queued for the next wave (`--shards 5-9`).
+
+## 12. Where we lose, and hidden seeds (v6/v7)
+- Our run-1 programs against the public frontier (the frontier is used **only as a measuring stick**), 416 solved puzzles grouped by simple features:
+
+  | class | length vs frontier |
+  |---|---|
+  | random 30/40/50-bit | 1.24 / 1.26 / 1.32 |
+  | shared 20/30/40/50-bit | 1.25 / 1.25 / 1.35 / **1.50** |
+  | overall | 1.31 |
+- The frontier program for scored_0923 (135 instructions against our 219–243) builds a small dictionary, then a few mid-size **seeds** (329948, 364736, 434602, 903228, …). Each target is then `seed_i*seed_j (*k) ± small`, for example 133032349697 = 364736²+1.
+- v6: continued-fraction **hub seeding** (`hubCands`). Neutral to negative on 12 practice puzzles (one 186→229), so it is kept only at 20% of random runs.
+- v7: **seed sieve** (`seedCands`). For a in [2^12, 2^24], count targets with |t − round(t/a)·a| ≤ 1024, score with a Poisson tail, drop small-ratio duplicates, cache per puzzle (about 1.7 s). On scored_0923 it recovers 903228 and 329948 (p≈1e-8) and their small multiples. Portfolio param `nSeeds` (0 in 40% of runs, otherwise 1–8) builds them first. A/B with a single cheapest-first run: scored_0923 219→188, practice_0016 211→190, others neutral or worse, so it belongs in the portfolio, not as a default.
+- Kaggle shards `elf-v5-00..04` are running. Fixed a broken `status` command in `kaggle_shards.py` (left over from a bad edit), and `collect` now honours `--shards`.

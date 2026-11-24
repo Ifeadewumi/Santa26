@@ -78,7 +78,8 @@ def push(a):
 
 
 def status(a):
-XX, f"{USER}/{kid(a.tag, i)}"], capture_output=True, text=True)
+    for i in parse_shards(a.shards, a.n):
+        r = subprocess.run(["kaggle", "kernels", "status", f"{USER}/{kid(a.tag, i)}"], capture_output=True, text=True)
         print(i, (r.stdout + r.stderr).strip().splitlines()[-1])
 
 
@@ -87,7 +88,7 @@ def collect(a):
     best = elf.read_progs_txt(a.best)
     before = sum(len(best[k]) for k in best)
     got = 0
-    for i in range(a.n):
+    for i in parse_shards(a.shards, a.n):
         with tempfile.TemporaryDirectory() as d:
             subprocess.run(["kaggle", "kernels", "output", f"{USER}/{kid(a.tag, i)}", "-p", d], capture_output=True)
             o = os.path.join(d, "out.txt")
