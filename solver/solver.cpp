@@ -246,6 +246,7 @@ struct Params {
     bool hub = false;      // build recovered hidden hubs first
     int hubShift = 18;     // residual threshold: |q*t_j - p*t_i| < t_j >> hubShift
     int nSeeds = 0;        // build the n most significant sieved seeds first
+    bool seedNorm = false; // normalise seeds towards significant divisors
     bool fallbackOnly = false;
 };
 
@@ -575,10 +576,11 @@ static vector<u64> gcdCands(const vector<u64> &tg, const vector<char> &cov, mt19
 // are dropped. Result: seeds sorted by significance (most significant first). Cached per puzzle.
 static mutex seedMu;
 static unordered_map<string, vector<u64>> seedCache;
-static vector<u64> seedCands(const Puzzle &P) {
+static vector<u64> seedCands(const Puzzle &P, bool norm) {
+    string ck = P.id + (norm ? "#n" : "#r");
     {
         lock_guard<mutex> lg(seedMu);
-        auto it = seedCache.find(P.id);
+        auto it = seedCache.find(ck);
         if (it != seedCache.end()) return it->second;
     }
     const u64 C = 1024;
@@ -604,6 +606,25 @@ static vector<u64> seedCands(const Puzzle &P) {
         }
     }
     sort(res.begin(), res.end());
+    auto hits = [&](u64 a) {
+        int h = 0;
+        for (u64 v : t) { if (v / a < 1024) continue; u64 r = v % a; if (r <= C || a - r <= C) h++; }
+        return h;
+    };
+    // normalise to primitive seeds: a -> a/k (k <= 16) while the divisor explains at least as many targets
+    unordered_set<u64> sig;
+    for (auto &pr : res) sig.insert(pr.second);
+    for (auto &pr : res) {  // only towards divisors that are themselves significant candidates
+        if (!norm) break;
+        u64 a = pr.second; int ha = hits(a);
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (u64 k = 2; k <= 16; k++)
+                if (a % k == 0 && sig.count(a / k) && hits(a / k) >= ha) { a /= k; ha = hits(a); changed = true; break; }
+        }
+        pr.second = a;
+    }
     vector<u64> out;
     for (auto &pr : res) {
         u64 a = pr.second; bool dup = false;
@@ -636,7 +657,7 @@ static vector<u64> seedCands(const Puzzle &P) {
         }
     }
     lock_guard<mutex> lg(seedMu);
-    seedCache[P.id] = out;
+    seedCache[ck] = out;
     return out;
 }
 
@@ -716,7 +737,7 @@ static bool runStrategy(const Puzzle &P, const Params &p, Tables &T, Planner &PL
         return B.runSteps(st);
     };
     if (p.nSeeds > 0 && !p.fallbackOnly) {
-        vector<u64> sd = seedCands(P);
+        vector<u64> sd = seedCands(P, p.seedNorm);
         if ((int)sd.size() > p.nSeeds) sd.resize(p.nSeeds);
         sort(sd.begin(), sd.end());
         for (u64 h : sd) {
@@ -1225,6 +1246,7 @@ static Params randomParams(mt19937_64 &rng) {
     p.poolCap = OV.poolCap > 0 ? OV.poolCap : caps[rng() % 6];
     p.hub = U(rng) < 0.2;
     p.nSeeds = U(rng) < 0.4 ? 0 : 1 + rng() % 8;
+    p.seedNorm = rng() % 2;
     if (OV.nSeeds >= 0) p.nSeeds = OV.nSeeds;
     p.hubShift = 14 + rng() % 9;
     applyOv(p);
@@ -1264,7 +1286,7 @@ static Result solvePuzzle(const Puzzle &P, const Result &init, double budget, u6
     { Params p; p.mode = 0; p.gcd = true; p.L2 = false; fixed.push_back(p); }
     { Params p; p.mode = 1; p.poolCap = 48; fixed.push_back(p); }  // always fits the registers
     { Params p; p.mode = 1; p.nSeeds = 4; fixed.push_back(p); }
-    { Params p; p.mode = 1; p.nSeeds = 8; fixed.push_back(p); }
+    { Params p; p.mode = 1; p.nSeeds = 2; p.seedNorm = true; fixed.push_back(p); }
 
     for (size_t k = 0; k < fixed.size() || !best.have; k++) {
         if (best.have && nowSec() > deadline) break;

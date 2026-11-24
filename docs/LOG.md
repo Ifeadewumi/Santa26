@@ -118,3 +118,4 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Submitted `submission_run1.csv` (own lineage only). **Kaggle public score 166,079**, equal to the local score. Leaderboard top at that time: 125,289. Public frontier: 128,324.
 - `ours.txt` = per-puzzle best of our own lineage (sample ∪ run 1) = 166,079.
 - Local cores are now free. Started **local run 2**: v7 (seeds, pool cap, `--fresh-polish 3`) on shards 5–9 (500 puzzles not covered by the running Kaggle wave), 2 h, warm start `ours.txt`.
+- Seed normalisation (v8). Naive "a/k explains ≥ as many targets" over-reduces to chance divisors: scored_0923 got 205–236. Restricting it to divisors that are themselves significant candidates gave mixed results: practice_0015 186→**168**, 0016→195, 0004→113, but scored_0923 213 (raw list: 188). Both variants are kept as the portfolio switch `seedNorm`, cached separately.
