@@ -135,3 +135,11 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Downloaded 13 public program datasets (40 distinct verified program files) with `kaggle datasets download`. Merged frontier **128,311**: 13 programs from ozertuu, goodpjw2008 `our_programs`, ishankarnick, kevinsmith94624, alexchilton, kindasomethin and royalacecat beat the earlier notebook merge.
 - **Submitted** `submission_best.csv` = public frontier ∪ own lineage (ours is not shorter anywhere yet). **Public score 128,311** (about rank 190).
 - Sources are credited in `docs/CREDITS.md`.
+- Studied the public engine bundle in `goodpjw2008/santa-2026-dag-lns-programs`. It contains:
+  - `elfopt.cpp`, a DAG-LNS engine with a fresh constructor (`--construct`), kicks and recipe dumps;
+  - 18 Apache-2.0 optimizers by Atakan Aldemir (multiplier frontier, interface closure, …);
+  - Wang Jakie's graph-search strategies;
+  - the driver loop (`recomb_pass.py`: LNS from best plus near-best variants, then CP-SAT recombination with program banks).
+
+  The driver only admits bank programs within +1/+3 of the best, so our longer lineage cannot be a donor until it gets close to frontier quality.
+- **Blocked:** running the compiled public engine (third-party code from a downloaded dataset) was denied by the session's permission classifier. Not worked around; waiting for the user's decision.
