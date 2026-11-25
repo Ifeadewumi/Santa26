@@ -162,3 +162,11 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - User: submit every time the merged score beats the previous high (100 submissions/day).
 - Added `solver/merge_public.py`, which verifies and merges every CSV/txt under the given paths into a best file, and `solver/submit_best.sh`, which verifies end to end, writes the CSV and submits.
 - Re-pulled the 15 freshest public datasets plus 3 notebook outputs. alexchilton (−15) and goodpjw2008 (−1) moved the frontier: **128,311 → 128,295, submitted, public 128,295**.
+
+## 17. Wave-2 results, engine wave launched (2026-11-25)
+- Local run 3 (v9, shards 5–9, 6,991 s): 500/500 valid, own lineage 149,008 → 147,448.
+- Kaggle wave 2 (`elf-v9-00..04`, v9, shards 0–4, 3 h): 224 puzzles improved, own lineage → **145,855**. No new puzzle below the frontier, so the best stays at 128,295.
+- Variants rebuilt against the current best: 1,460 starts on 967 puzzles.
+- **Engine wave `elf-lns1-00..04`**: public DAG-LNS engine (`--kicks 1000 --kslack 2`), 5 shards of 200 puzzles, 3 h, best + variants. Shards 0–2 started at once. 3–4 hit the 5-session cap (completed kernels release slowly) and go through a retry loop.
+- Local engine run (`solver/run_elfopt_local.py`): 200 longest best programs + their variants, 4 processes, 2 h, different seeds.
+- The wave-2 poller hit the background time limit and was stopped; status was checked directly.
