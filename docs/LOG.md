@@ -194,3 +194,9 @@ Read 12 notebooks and the discussion topics (761540, 761295, 761146). Findings:
 - **Ceiling for deep single-target rebuilds** (MITM/GPU): at most about 1,176 instructions in total (887 targets with exclusive chains of 6+; 5 fresh instructions is the published floor per chain).
 - **What still pays:** goodpjw2008's `triwalk.cpp` (set-of-values state, triple-based add/drop/rebuild moves, annealing). Their own log: 24-39 instr per wall-hour on a 20-core box when run on other lineages and converged programs, 56/h for the annealing build (not published). That is roughly 1-2 instr per core-hour, about 10x the public `elfopt` yield we measured. The source and `tri_driver.py`/`schedule21.sh` are in `goodpjw2008/santa-2026-dag-lns-programs` (already downloaded).
 - **Race dynamics** (Colton Downing, Aberman): the public frontier moved 132,236 -> 128,216 in 84 h; the top teams run weeks of compute. Gains from re-merging are shared by hundreds of teams at once.
+
+## 21. triwalk (public, goodpjw2008) measured locally
+- Source scanned (stdin/stdout only). Built with g++ -O2.
+- 40 longest best programs, 58 s each (0.7 core-h): **0**.
+- 561 alternative-lineage starts (public programs within +5 of best, <70% value overlap, 462 puzzles), 30 s each, 4 cores (4.7 core-h): **-1** (128,215 -> 128,214, submitted).
+- Yield about 0.2 instr per core-hour, the same as elfopt. goodpjw2008's 24-56 per wall-hour came from an unpublished annealing build and a frontier that was not yet merged. Public triwalk is saturated on today's frontier.
