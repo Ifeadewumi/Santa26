@@ -185,3 +185,12 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Re-pulled 11 datasets + 8 notebook outputs; per-puzzle merge = **128,215**, submitted (public 128,215). Only alexchilton's Rudolph file and one goodpjw2008 file contributed over the sample.
 - Leaderboard (3,028 teams): rank 1 = 124,947, rank 10 = 126,151, rank 25 = 127,422, **rank 50 = 127,740**, rank 100 = 128,111, rank 200 = 128,211. Gap to rank 50: 475.
 - Overhead profile of the frontier (extra instructions per target): about 2.0 at limits of 1e7-1e12, 2.9-3.8 at 1e13-1e15, and 4.7-4.9 at 1e16-1e18 (about 56k of the 101k extras). That is where any remaining mass is.
+
+## 20. Kaggle survey of prior construction efforts (before any new constructor)
+Read 12 notebooks and the discussion topics (761540, 761295, 761146). Findings:
+- **From-scratch constructors have been tried and lose.** sidhaarthshree (own C++ synthesizer), menes97 ("a global constructor that lost to the frontier on every puzzle"), Nir Aberman's team (from-scratch synthesizer +25%, then value-DAG LNS 30 min/puzzle still +26.6%), wilanw (177 experiments), konbu17 (about 1100 CPU-hours for 142,940). Ours: +14% to +21%. Same conclusion everywhere.
+- **No generator shortcut for the independent targets** (about a third of the score): 11 structure metrics, all null (Aberman). Single-target rebuilds: 0/6,809. Depth-2 multi-target moves: 0 on 140 puzzles. 64 registers instead of 48: 1 instruction total. The 48-register limit is not the wall.
+- **Recombination is proved empty** on 152/153 puzzles (Mamarin, CP-SAT). Any gain needs values that appear in no public program.
+- **Ceiling for deep single-target rebuilds** (MITM/GPU): at most about 1,176 instructions in total (887 targets with exclusive chains of 6+; 5 fresh instructions is the published floor per chain).
+- **What still pays:** goodpjw2008's `triwalk.cpp` (set-of-values state, triple-based add/drop/rebuild moves, annealing). Their own log: 24-39 instr per wall-hour on a 20-core box when run on other lineages and converged programs, 56/h for the annealing build (not published). That is roughly 1-2 instr per core-hour, about 10x the public `elfopt` yield we measured. The source and `tri_driver.py`/`schedule21.sh` are in `goodpjw2008/santa-2026-dag-lns-programs` (already downloaded).
+- **Race dynamics** (Colton Downing, Aberman): the public frontier moved 132,236 -> 128,216 in 84 h; the top teams run weeks of compute. Gains from re-merging are shared by hundreds of teams at once.
