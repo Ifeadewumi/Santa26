@@ -170,3 +170,7 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - **Engine wave `elf-lns1-00..04`**: public DAG-LNS engine (`--kicks 1000 --kslack 2`), 5 shards of 200 puzzles, 3 h, best + variants. Shards 0–2 started at once. 3–4 hit the 5-session cap (completed kernels release slowly) and go through a retry loop.
 - Local engine run (`solver/run_elfopt_local.py`): 200 longest best programs + their variants, 4 processes, 2 h, different seeds.
 - The wave-2 poller hit the background time limit and was stopped; status was checked directly.
+- Local engine run 1 (200 longest best programs + variants, 4 procs × 2 h, 60 s per block): **2 programs below the frontier (−2)**, about 0.25 instructions per core-hour on converged programs.
+- Re-pulled public datasets: alexchilton −56. **Submitted 128,237** (public 128,237).
+- Leaderboard (2,991 teams): rank 1 = 124,995, rank 25 = 127,464, **rank 50 = 127,837**, rank 100 = 128,171, rank 200 = 128,236. We are at about rank 210, with teams packed tightly around the public frontier.
+- Next: local engine LNS on **fresh programs** (those changed by today's merges; public evidence is about 8× yield on fresh against converged), 1.5 h.
