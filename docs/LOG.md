@@ -179,3 +179,9 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - `elf-lns1-00..04` (public DAG-LNS, `--kicks 1000 --kslack 2`, best + 1,460 variants, 5 × 4 cores × 3 h = 60 core-hours): 5 programs shorter than the input best, but all 5 were already superseded by the newer public merge (128,237). **Net new: 0.**
 - Measured yield on the converged frontier is about 0.03–0.25 instructions per core-hour (local 2 h run: −2; Kaggle wave: −5 before merge, 0 after). At that rate the ~400 instructions to rank 50 (127,837) would take thousands of core-hours, and the public frontier itself is moving about 50–100 per day.
 - Local engine LNS on the 63 fresh programs (changed by today's merges) plus variants, 4 procs × 1.5 h, 143 s per block: **0 improvements**. Those programs arrived already polished by their authors' engines.
+
+## 19. New container, re-merge (2026-11-25)
+- Fresh container lost all program files; `state/best_128215.txt.gz` now keeps the best set in the repo (`zcat` -> solver text format; `elf.read_progs_txt`).
+- Re-pulled 11 datasets + 8 notebook outputs; per-puzzle merge = **128,215**, submitted (public 128,215). Only alexchilton's Rudolph file and one goodpjw2008 file contributed over the sample.
+- Leaderboard (3,028 teams): rank 1 = 124,947, rank 10 = 126,151, rank 25 = 127,422, **rank 50 = 127,740**, rank 100 = 128,111, rank 200 = 128,211. Gap to rank 50: 475.
+- Overhead profile of the frontier (extra instructions per target): about 2.0 at limits of 1e7-1e12, 2.9-3.8 at 1e13-1e15, and 4.7-4.9 at 1e16-1e18 (about 56k of the 101k extras). That is where any remaining mass is.
