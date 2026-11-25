@@ -174,3 +174,7 @@ Totals are in `docs/EXPERIMENTS.md` rows E2–E9. Conclusions: gcd seeding is es
 - Re-pulled public datasets: alexchilton −56. **Submitted 128,237** (public 128,237).
 - Leaderboard (2,991 teams): rank 1 = 124,995, rank 25 = 127,464, **rank 50 = 127,837**, rank 100 = 128,171, rank 200 = 128,236. We are at about rank 210, with teams packed tightly around the public frontier.
 - Next: local engine LNS on **fresh programs** (those changed by today's merges; public evidence is about 8× yield on fresh against converged), 1.5 h.
+
+## 18. Engine-wave yield (measured)
+- `elf-lns1-00..04` (public DAG-LNS, `--kicks 1000 --kslack 2`, best + 1,460 variants, 5 × 4 cores × 3 h = 60 core-hours): 5 programs shorter than the input best, but all 5 were already superseded by the newer public merge (128,237). **Net new: 0.**
+- Measured yield on the converged frontier is about 0.03–0.25 instructions per core-hour (local 2 h run: −2; Kaggle wave: −5 before merge, 0 after). At that rate the ~400 instructions to rank 50 (127,837) would take thousands of core-hours, and the public frontier itself is moving about 50–100 per day.
